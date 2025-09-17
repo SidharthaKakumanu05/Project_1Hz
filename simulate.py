@@ -18,12 +18,12 @@ def simulate_current_from_proj(proj, V_post):
     Convert synapse conductances to currents on postsynaptic neurons.
     Each synapse contributes:
         I = g * (E_rev - V_post[post_idx])
-    summed over all synapses onto each postsynaptic neuron.
+    summed onto each postsynaptic neuron.
     """
     g, post_idx = proj.currents_to_post()  # g: [M], post_idx: [M]
     I = cp.zeros_like(V_post, dtype=cp.float32)
     I_con = g * (proj.E_rev - V_post[post_idx])
-    cp.scatter_add(I, post_idx, I_con)  # accumulate per postsynaptic neuron
+    cp.add.at(I, post_idx, I_con)  # accumulate contributions
     return I
 
 def run():
