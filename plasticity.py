@@ -13,8 +13,8 @@ def update_pfpkj_plasticity(weights, pre_idx, post_idx,
 
     if traces is None:
         traces = {
-            "last_pf_spike": cp.full(pre_idx.max() + 1, -cp.inf, dtype=cp.float32),
-            "last_pkj_spike": cp.full(post_idx.max() + 1, -cp.inf, dtype=cp.float32),
+            "last_pf_spike": cp.full(int(pre_idx.max().item()) + 1, -cp.inf, dtype=cp.float32),
+            "last_pkj_spike": cp.full(int(post_idx.max().item()) + 1, -cp.inf, dtype=cp.float32),
         }
 
     t_now = cp.float32(traces.get("t", 0.0))
