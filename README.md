@@ -1,0 +1,1 @@
+mini simulation of 3 neuron circuit --> super super slow rn, i have no idea how to make ts faster because as it stands, this might not run by the time i die
