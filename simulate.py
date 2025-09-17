@@ -13,17 +13,18 @@ from plasticity import update_pfpkj_plasticity
 from recorder import Recorder
 
 
-def simulate_current_from_proj(proj: SynapseProj, V_post: cp.ndarray) -> cp.ndarray:
+def simulate_current_from_proj(proj, V_post):
     """
     Convert synapse conductances to currents on postsynaptic neurons.
-    I = g_post * (E_rev - V_post).
+    Each synapse contributes:
+        I = g * (E_rev - V_post[post_idx])
+    summed over all synapses onto each postsynaptic neuron.
     """
-    g_post, post_idx = proj.currents_to_post()
+    g, post_idx = proj.currents_to_post()  # g: [M], post_idx: [M]
     I = cp.zeros_like(V_post, dtype=cp.float32)
-    I_con = g_post * (proj.E_rev - V_post[: g_post.size])
-    I[: g_post.size] = I_con
+    I_con = g * (proj.E_rev - V_post[post_idx])
+    cp.scatter_add(I, post_idx, I_con)  # accumulate per postsynaptic neuron
     return I
-
 
 def run():
     cfg = get_config()
