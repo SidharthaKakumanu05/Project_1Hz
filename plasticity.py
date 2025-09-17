@@ -1,106 +1,64 @@
 import cupy as cp
 
 
-def update_pfpkj_plasticity(
-    w,                # cp.ndarray, shape [M] (one per PF→PKJ synapse)
-    pre_idx,          # cp.ndarray, shape [M], PF indices for each synapse
-    post_idx,         # cp.ndarray, shape [M], PKJ indices for each synapse
-    pf_spikes,        # cp.ndarray(bool), shape [N_PF], PF spikes this step
-    pkj_spikes,       # cp.ndarray(bool), shape [N_PKJ], (unused here but kept for API)
-    cf_mask,          # cp.ndarray(bool), shape [N_PKJ], PKJs that got CF this step
-    dt,               # float, timestep (s)
-    cfg,              # dict, must include ltd_window/ltp_window + scales + w_min/w_max
-    traces=None       # dict or None; keeps last spike times on GPU
-):
+def update_pfpkj_plasticity(weights, pre_idx, post_idx,
+                            pf_spikes, pkj_spikes, cf_mask,
+                            dt, cfg, traces=None):
     """
-    PF→PKJ plasticity (CuPy, vectorized) with last-spike timing:
-
-    - LTD (strong): PF spike within |Δt| ≤ LTD window (e.g., 0.1 s) of a CF on the same PKJ.
-    - LTP (weak):   PF spike within LTP window (e.g., 0.9 s) but NOT in LTD window.
-
-    Windows and scales from cfg:
-      cfg["ltd_window"]["t_pre_cf"]  (e.g., 0.1)
-      cfg["ltp_window"]["t_pre_cf"]  (e.g., 0.9)
-      cfg["ltd_scale"]               (e.g., 9e-4)
-      cfg["ltp_scale"]               (e.g., 1e-4)
-      cfg["w_min"], cfg["w_max"]
+    STDP-like PF→PKJ plasticity.
+    - LTD: narrow, strong (~100 ms window)
+    - LTP: broad, weak (~900 ms window)
+    cf_mask: bool mask of PKJs receiving CF spikes at this timestep
     """
 
-    # convert windows to step units
-    ltd_win = int(cfg["ltd_window"]["t_pre_cf"] / dt)   # e.g., 0.1 s → steps
-    ltp_win = int(cfg["ltp_window"]["t_pre_cf"] / dt)   # e.g., 0.9 s → steps
-    ltd_scale = cp.float32(cfg["ltd_scale"])
-    ltp_scale = cp.float32(cfg["ltp_scale"])
-
-    # --- initialize traces if first call ---
-    # We store LAST spike time (in integer steps) for each PF and PKJ (CF targets).
-    # Sentinel = -1 (means "never").
     if traces is None:
-        n_pf = int(cp.max(pre_idx).item()) + 1
-        n_pkj = int(cp.max(post_idx).item()) + 1
         traces = {
-            "pf_last": cp.full(n_pf, -1, dtype=cp.int64),
-            "cf_last": cp.full(n_pkj, -1, dtype=cp.int64),
+            "last_pf_spike": cp.full(pre_idx.max() + 1, -cp.inf, dtype=cp.float32),
+            "last_pkj_spike": cp.full(post_idx.max() + 1, -cp.inf, dtype=cp.float32),
         }
-        update_pfpkj_plasticity._t = 0  # simulation step counter
 
-    pf_last = traces["pf_last"]
-    cf_last = traces["cf_last"]
+    t_now = cp.float32(traces.get("t", 0.0))
 
-    # current simulation time in integer steps
-    t = int(getattr(update_pfpkj_plasticity, "_t", 0))
+    # update last-spike times
+    pf_idx_fired = cp.where(pf_spikes)[0]
+    if pf_idx_fired.size > 0:
+        traces["last_pf_spike"][pf_idx_fired] = t_now
 
-    # --- update last-spike times from this step ---
-    # PF that spiked now
-    if pf_spikes.any():
-        sp_pf_ids = cp.where(pf_spikes)[0]
-        pf_last[sp_pf_ids] = t
+    pkj_idx_fired = cp.where(pkj_spikes)[0]
+    if pkj_idx_fired.size > 0:
+        traces["last_pkj_spike"][pkj_idx_fired] = t_now
 
-    # PKJs that received a CF now (1:1 IO→CF→PKJ mapping already applied upstream)
+    # LTD: PF active recently + CF arrives
+    ltd_window = cfg["ltd_window"]["t_pre_cf"]
+    ltp_window = cfg["ltp_window"]["t_pre_cf"]
+    ltd_scale  = cfg["ltd_scale"]
+    ltp_scale  = cfg["ltp_scale"]
+
     if cf_mask.any():
-        sp_cf_ids = cp.where(cf_mask)[0]
-        cf_last[sp_cf_ids] = t
+        pkj_targets = cp.where(cf_mask)[0]
+        for pkj in pkj_targets:
+            # find PFs connected to this PKJ
+            mask = (post_idx == pkj)
+            pf_connected = pre_idx[mask]
 
-    # --- vectorized timing lookups per synapse ---
-    # For each synapse, look up the last PF time of its pre and last CF time of its post.
-    pf_last_syn = pf_last[pre_idx]      # shape [M]
-    cf_last_syn = cf_last[post_idx]     # shape [M]
+            # LTD if PF fired within ltd_window
+            last_pf = traces["last_pf_spike"][pf_connected]
+            dt_pf = t_now - last_pf
+            eligible = (dt_pf >= 0) & (dt_pf <= ltd_window)
+            weights[mask][eligible] -= ltd_scale
 
-    # Validity masks (spike has occurred at least once)
-    pf_valid = pf_last_syn >= 0
-    cf_valid = cf_last_syn >= 0
+    # LTP: PF fired, PKJ spiked later (broad window)
+    if pkj_idx_fired.size > 0:
+        for pkj in pkj_idx_fired:
+            mask = (post_idx == pkj)
+            pf_connected = pre_idx[mask]
+            last_pf = traces["last_pf_spike"][pf_connected]
+            dt_pf = t_now - last_pf
+            eligible = (dt_pf >= 0) & (dt_pf <= ltp_window)
+            weights[mask][eligible] += ltp_scale
 
-    # Δt in steps between the last PF and CF for that synapse's endpoints
-    # (absolute for LTD window check)
-    delta_pf_cf = cp.abs(pf_last_syn - cf_last_syn)
+    # clip weights
+    weights = cp.clip(weights, cfg["w_min"], cfg["w_max"])
 
-    # time since last PF for LTP window check
-    dt_since_pf = t - pf_last_syn
-
-    # time since last CF for excluding LTD-window cases in LTP
-    dt_since_cf = t - cf_last_syn
-
-    # --- LTD mask: PF & CF both valid and |Δt| ≤ ltd_win ---
-    ltd_mask = pf_valid & cf_valid & (delta_pf_cf <= ltd_win)
-
-    # --- LTP mask: PF valid & within ltp_win, but NOT in LTD window (and no CF within ltd_win) ---
-    ltp_mask = (
-        pf_valid
-        & (dt_since_pf >= 0)
-        & (dt_since_pf <= ltp_win)
-        & (~ltd_mask)
-        & ( (~cf_valid) | (dt_since_cf > ltd_win) )
-    )
-
-    # --- apply updates ---
-    # Note: use in-place ops on GPU arrays
-    w[ltd_mask] -= ltd_scale
-    w[ltp_mask] += ltp_scale
-
-    # clamp weights
-    cp.clip(w, cfg["w_min"], cfg["w_max"], out=w)
-
-    # advance global plasticity time
-    update_pfpkj_plasticity._t = t + 1
-
-    return w, traces
+    traces["t"] = t_now + dt
+    return weights, traces
