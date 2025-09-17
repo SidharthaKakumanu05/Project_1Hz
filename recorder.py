@@ -1,38 +1,50 @@
+import cupy as cp
 import numpy as np
 
+
 class Recorder:
+    """
+    Records spikes and weights during simulation.
+    Data is stored on GPU (CuPy) until finalize_npz(),
+    where it is converted back to NumPy for saving.
+    """
+
     def __init__(self, cfg):
-        self.dt = cfg["dt"]
-        self.spikes = {}
-        self.series = {}
-        self.weight_times = []
-        self.weight_means = []
-        self.weight_stds  = []
-        self.weight_full  = []   # NEW
-        self.weight_every = cfg["rec_weight_every_steps"]
+        self.spikes = {pop: [] for pop in ["IO", "PKJ", "BC", "DCN", "PF"]}
+        self.weights = []
+        self.cfg = cfg
 
-    def log_spikes(self, name, step_mask):
-        self.spikes.setdefault(name, []).append(step_mask.copy())
+    def log_spikes(self, pop, spikes):
+        """
+        Log spike vector for a population.
+        Stored as CuPy arrays on GPU.
+        """
+        self.spikes[pop].append(spikes.astype(cp.int8))
 
-    def log_scalar(self, name, value):
-        self.series.setdefault(name, []).append(float(value))
-
-    def maybe_log_weights(self, step, w):
-        if step % self.weight_every == 0:
-            self.weight_times.append(step*self.dt)
-            self.weight_means.append(float(np.mean(w)))
-            self.weight_stds.append(float(np.std(w)))
-            self.weight_full.append(w.copy())  # NEW: store full vector
+    def maybe_log_weights(self, step, weights):
+        """
+        Log PF→PKJ weights at defined intervals.
+        """
+        if step % self.cfg["rec_weight_every_steps"] == 0:
+            self.weights.append(weights.copy())
 
     def finalize_npz(self, path):
+        """
+        Convert all logged data to NumPy and save to .npz.
+        """
         out = {}
-        for k, v in self.spikes.items():
-            out[f"spikes/{k}"] = np.array(v, dtype=bool)
-        for k, v in self.series.items():
-            out[f"series/{k}"] = np.array(v, dtype=np.float32)
-        out["weights/time"] = np.array(self.weight_times, dtype=np.float32)
-        out["weights/mean"] = np.array(self.weight_means, dtype=np.float32)
-        out["weights/std"]  = np.array(self.weight_stds, dtype=np.float32)
-        if self.weight_full:  # save full weights if logged
-            out["weights/full"] = np.array(self.weight_full, dtype=np.float32)
+
+        # Spikes: list of timesteps → stack into [T, N]
+        for pop, seq in self.spikes.items():
+            if len(seq) > 0:
+                out[f"{pop}_spikes"] = np.stack([cp.asnumpy(x) for x in seq])
+            else:
+                out[f"{pop}_spikes"] = np.zeros((0,), dtype=np.int8)
+
+        # Weights: [timepoints, num_synapses]
+        if len(self.weights) > 0:
+            out["PF_PKJ_weights"] = np.stack([cp.asnumpy(w) for w in self.weights])
+        else:
+            out["PF_PKJ_weights"] = np.zeros((0,), dtype=np.float32)
+
         np.savez(path, **out)

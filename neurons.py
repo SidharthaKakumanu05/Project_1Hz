@@ -1,27 +1,71 @@
+import cupy as cp
 
-import numpy as np
 
 class NeuronState:
-    __slots__ = ("V","refrac","spike")
+    """
+    Holds the state of a population of leaky integrate-and-fire neurons.
+    All arrays are allocated on GPU using CuPy.
+    """
+
     def __init__(self, N, lif_cfg, rng):
-        self.V = np.full(N, lif_cfg["Vreset"], dtype=np.float32)
-        self.refrac = np.zeros(N, dtype=np.int32)
-        self.spike = np.zeros(N, dtype=bool)
+        """
+        Parameters
+        ----------
+        N : int
+            Number of neurons in this population.
+        lif_cfg : dict
+            Dictionary of LIF parameters (C, gL, EL, Vth, Vreset, refrac_steps).
+        rng : cupy.random.Generator
+            Random generator for this population.
+        """
+        self.V = cp.full(N, lif_cfg["EL"], dtype=cp.float32)       # membrane potential
+        self.refrac = cp.zeros(N, dtype=cp.int32)                  # refractory counter
+        self.spike = cp.zeros(N, dtype=bool)                       # spike indicator
+        self.rng = rng                                             # CuPy RNG
+
 
 def lif_step(state, I_syn, I_ext, dt, lif_cfg):
-    C = lif_cfg["C"]; gL = lif_cfg["gL"]; EL = lif_cfg["EL"]
-    Vth = lif_cfg["Vth"]; Vreset = lif_cfg["Vreset"]; refrac_steps = lif_cfg["refrac_steps"]
+    """
+    Advance the LIF neuron state by one timestep on GPU.
+
+    Parameters
+    ----------
+    state : NeuronState
+        Current state of the neurons.
+    I_syn : cp.ndarray
+        Synaptic input current for each neuron.
+    I_ext : cp.ndarray
+        External bias/input current for each neuron.
+    dt : float
+        Simulation timestep.
+    lif_cfg : dict
+        LIF parameters.
+
+    Returns
+    -------
+    NeuronState
+        Updated neuron state.
+    """
     V = state.V
-    active = state.refrac <= 0
-    V[~active] = Vreset
-    state.refrac[~active] -= 1
-    if np.any(active):
-        idx = np.where(active)[0]
-        dV = dt * ( -gL*(V[idx] - EL) + I_syn[idx] + I_ext[idx] ) / C
-        V[idx] += dV
-    spk = V >= Vth
-    state.spike[:] = spk
-    if np.any(spk):
-        V[spk] = Vreset
-        state.refrac[spk] = refrac_steps
+    refrac = state.refrac
+
+    # spikes if above threshold and not refractory
+    spike = (V >= lif_cfg["Vth"]) & (refrac == 0)
+
+    # integrate LIF membrane equation
+    dV = (lif_cfg["EL"] - V) * lif_cfg["gL"] / lif_cfg["C"] + (I_syn + I_ext) / lif_cfg["C"]
+    V = V + dt * dV
+
+    # reset voltage after spike
+    V[spike] = lif_cfg["Vreset"]
+
+    # update refractory counters
+    refrac[refrac > 0] -= 1
+    refrac[spike] = lif_cfg["refrac_steps"]
+
+    # save back
+    state.V = V
+    state.refrac = refrac
+    state.spike = spike
+
     return state
