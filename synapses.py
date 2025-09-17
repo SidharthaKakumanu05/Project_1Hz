@@ -3,82 +3,54 @@ import cupy as cp
 
 class SynapseProj:
     """
-    Synapse projection class for handling connectivity, conductance,
-    and current delivery between pre and post neuron populations.
+    Generic synapse projection:
+    - manages delay lines
+    - computes decaying conductances
+    - handles pre→post enqueue
     """
 
-    def __init__(self, pre_idx, post_idx, w_init, E_rev, tau, delay_steps, rng):
-        """
-        Parameters
-        ----------
-        pre_idx : array-like
-            Indices of presynaptic neurons.
-        post_idx : array-like
-            Indices of postsynaptic neurons (aligned with pre_idx).
-        w_init : array-like
-            Initial synaptic weights.
-        E_rev : float
-            Reversal potential of the synapse.
-        tau : float
-            Synaptic time constant.
-        delay_steps : int
-            Transmission delay in timesteps.
-        rng : cupy.random.Generator
-            Random number generator.
-        """
-        self.pre_idx = cp.array(pre_idx, dtype=cp.int32)
-        self.post_idx = cp.array(post_idx, dtype=cp.int32)
-        self.w = cp.array(w_init, dtype=cp.float32)
-        self.E_rev = E_rev
+    def __init__(self, pre_idx, post_idx, w_init, E_rev, tau, delay_steps):
+        self.pre_idx = cp.asarray(pre_idx, dtype=cp.int32)
+        self.post_idx = cp.asarray(post_idx, dtype=cp.int32)
+
+        self.M = self.pre_idx.size
+        self.w = cp.asarray(w_init, dtype=cp.float32)
+
+        self.E_rev = cp.float32(E_rev)
         self.tau = tau
         self.delay_steps = delay_steps
-        self.rng = rng
 
-        # conductance values for each synapse
-        self.g = cp.zeros_like(self.w)
+        # delay buffer
+        self.delay_buf = cp.zeros((delay_steps + 1, self.M), dtype=cp.float32)
+        self.buf_ptr = 0
 
-        # exponential decay factor for synaptic conductance
-        self.alpha = cp.float32(0.0)
+        # decay factor (set later by set_alpha)
+        self.alpha = None
 
-    def set_alpha(self, alpha_val):
-        """Set decay factor alpha = exp(-dt / tau)."""
-        self.alpha = cp.float32(alpha_val)
-
-    def step_decay(self):
-        """Decay synaptic conductance each step."""
-        self.g *= self.alpha
+    def set_alpha(self, alpha):
+        self.alpha = alpha
 
     def enqueue_from_pre_spikes(self, pre_spikes, scale=None):
         """
-        Add synaptic conductance from active presynaptic spikes.
-
-        Parameters
-        ----------
-        pre_spikes : cp.ndarray (bool)
-            Spike array for all presynaptic neurons.
-        scale : cp.ndarray or None
-            Optional scaling factor for each connection.
+        Insert spikes into delay buffer, scaled by weights (and optional scale factors).
         """
-        active = cp.where(pre_spikes)[0]
-        if active.size > 0:
-            mask = cp.isin(self.pre_idx, active)
-            if mask.any():
-                if scale is None:
-                    self.g[mask] += self.w[mask]
-                else:
-                    self.g[mask] += self.w[mask] * scale[mask]
+        active = pre_spikes[self.pre_idx].astype(cp.float32)
+        if scale is not None:
+            active = active * scale
+        contrib = active * self.w
+        self.delay_buf[self.buf_ptr, :] += contrib
+
+    def step_decay(self):
+        """
+        Advance buffer pointer and decay conductances.
+        """
+        self.buf_ptr = (self.buf_ptr + 1) % self.delay_buf.shape[0]
+        self.delay_buf[self.buf_ptr, :] *= 0.0  # reset slot
 
     def currents_to_post(self):
         """
-        Compute currents delivered to postsynaptic targets.
-
-        Returns
-        -------
-        I_post : cp.ndarray
-            Current array (size = max(post_idx)+1).
-        post_idx : cp.ndarray
-            Postsynaptic indices corresponding to synapses.
+        Sum active conductances, apply decay, return (g, post_idx).
         """
-        I_post = cp.zeros(int(self.post_idx.max()) + 1, dtype=cp.float32)
-        cp.scatter_add(I_post, self.post_idx, self.g)
-        return I_post, self.post_idx
+        # effective conductance = sum over delay slots
+        g = cp.sum(self.delay_buf, axis=0)
+        return g, self.post_idx
