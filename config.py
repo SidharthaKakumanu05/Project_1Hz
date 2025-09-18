@@ -9,7 +9,7 @@ def get_config():
     cfg["N_PF_POOL"] = 4096
 
     cfg["dt"] = 1e-4
-    cfg["T_sec"] = 10
+    cfg["T_sec"] = 1
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])
     cfg["seed"] = 12345
 
@@ -38,11 +38,13 @@ def get_config():
     # Input rates & conductances
     cfg["pf_rate_hz"] = 30.0
     cfg["pf_refrac_steps"] = int(0.005 / cfg["dt"])
-    cfg["pf_g_mean"] = 2e-10
-    cfg["pf_g_std"]  = 1e-10
+    cfg["pf_g_mean"] = 4e-10
+    cfg["pf_g_std"]  = 2e-10
     cfg["mf_rate_hz"] = 50.0
     cfg["mf_g_mean"] = 4e-9
     cfg["mf_g_std"]  = 1e-9
+    cfg["bc_g_mean"] = 5e-9    # adjust as needed
+    cfg["bc_g_std"]  = 1e-9
 
     # Initial PF→PKJ weights
     cfg["w_pfpkj_init"] = 1.0
@@ -50,13 +52,18 @@ def get_config():
     cfg["w_max"] = 3.0
     cfg["w_leak"] = 0.0
 
-    # IO tonic bias & coupling
-    cfg["io_bias_current"] = 200e-12
-    cfg["g_gap_IO"] = 3e-9
+    # --- IO excitability (near threshold) ---
+    cfg["io_bias_current"] = 181e-12     # ~subthreshold; you were at 181e-12
+    cfg["io_noise_std"] = 40e-12      # A/√s, diffusion-style current noise
+    cfg["io_bias_jitter_std"] = 10e-12      # A, fixed per-neuron offset
+
+    # Gap coupling (not too strong or they'll synchronize too much)
+    cfg["g_gap_IO"] = 2.5e-9      # was 3e-9 earlier; lighten a bit
+
 
     # Plasticity windows & scales
-    cfg["ltd_window"] = dict(t_pre_cf=0.1)   # 100 ms LTD
-    cfg["ltp_window"] = dict(t_pre_cf=0.9)   # 900 ms LTP
+    cfg["ltd_window"] = dict(t_pre_cf=0.05)   # 50 ms LTD
+    cfg["ltp_window"] = dict(t_pre_cf=0.45)   # 450 ms LTP
     cfg["ltd_scale"]  = 9e-4                 # LTD strong
     cfg["ltp_scale"]  = 1e-4                 # LTP weak
 
