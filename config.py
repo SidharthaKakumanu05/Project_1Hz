@@ -9,7 +9,7 @@ def get_config():
     cfg["N_PF_POOL"] = 4096
 
     cfg["dt"] = 1e-4
-    cfg["T_sec"] = 1
+    cfg["T_sec"] = 10
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])
     cfg["seed"] = 12345
 

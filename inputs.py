@@ -1,42 +1,31 @@
 import cupy as cp
 
-
 def init_pf_state(N_pool, refrac_steps):
-    """
-    Initialize parallel fiber (PF) pool state.
-    """
     return {
         "refrac": cp.zeros(N_pool, dtype=cp.int32),
+        "N": N_pool,
         "refrac_steps": refrac_steps,
     }
 
-
 def step_pf_coinflip(pf_state, rate_hz, dt):
-    """
-    Coin-flip firing for PF pool.
-    """
-    N = pf_state["refrac"].size
-    pf_state["refrac"] = cp.maximum(pf_state["refrac"] - 1, 0)
-
-    p_fire = rate_hz * dt
-    rand = cp.random.random(N)
-    pf_spikes = (rand < p_fire) & (pf_state["refrac"] == 0)
-
-    pf_state["refrac"][pf_spikes] = pf_state["refrac_steps"]
-    return pf_spikes
-
+    """Bernoulli coinflip PF spikes with refractory."""
+    p = rate_hz * dt
+    refrac = pf_state["refrac"]
+    can_fire = refrac <= 0
+    spikes = cp.zeros(pf_state["N"], dtype=bool)
+    randu = cp.random.random(pf_state["N"])
+    spikes = cp.logical_and(can_fire, randu < p)
+    # update refractory: set after spike, decrement otherwise
+    refrac[spikes] = pf_state["refrac_steps"]
+    refrac[~spikes] = cp.maximum(0, refrac[~spikes] - 1)
+    pf_state["refrac"] = refrac
+    return spikes
 
 def draw_pf_conductances(N_conn, g_mean, g_std):
-    """
-    Draw random PF conductances.
-    """
-    return cp.random.normal(loc=g_mean, scale=g_std, size=N_conn).astype(cp.float32)
+    g = cp.random.normal(loc=g_mean, scale=g_std, size=N_conn).astype(cp.float32)
+    return cp.maximum(g, 0.0)  # clip at 0
 
-
-def step_mf_poisson(N_dcn, rate_hz, dt):
-    """
-    Generate mossy fiber (MF) spikes as Poisson process.
-    """
-    p_fire = rate_hz * dt
-    rand = cp.random.random(N_dcn)
-    return rand < p_fire
+def step_mf_poisson(N, rate_hz, dt):
+    """Poisson MF spikes of length N (must match MF_to_DCN pre pool)."""
+    p = rate_hz * dt
+    return (cp.random.random(N) < p)

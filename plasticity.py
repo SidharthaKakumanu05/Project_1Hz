@@ -1,64 +1,75 @@
 import cupy as cp
 
-
-def update_pfpkj_plasticity(weights, pre_idx, post_idx,
-                            pf_spikes, pkj_spikes, cf_mask,
-                            dt, cfg, traces=None):
+def update_pfpkj_plasticity(
+    w, pre_idx, post_idx,
+    pf_spikes, pkj_spikes, cf_mask,
+    t, cfg,
+    last_pf_spike, last_pkj_spike, last_cf_spike
+):
     """
-    STDP-like PF→PKJ plasticity.
-    - LTD: narrow, strong (~100 ms window)
-    - LTP: broad, weak (~900 ms window)
-    cf_mask: bool mask of PKJs receiving CF spikes at this timestep
+    PF->PKJ plasticity using last-spike STDP rule.
+
+    Parameters
+    ----------
+    w : cp.ndarray
+        Synaptic weights for PF->PKJ.
+    pre_idx : cp.ndarray
+        Indices of presynaptic PFs.
+    post_idx : cp.ndarray
+        Indices of postsynaptic PKJs.
+    pf_spikes : cp.ndarray (bool)
+        Spikes from PF pool this step.
+    pkj_spikes : cp.ndarray (bool)
+        Spikes from PKJ cells this step.
+    cf_mask : cp.ndarray (bool)
+        Mask of PKJs that received CF input this step.
+    t : float
+        Current simulation time (s).
+    cfg : dict
+        Simulation config dictionary.
+    last_pf_spike, last_pkj_spike, last_cf_spike : cp.ndarray
+        Last spike times for PF, PKJ, and CF neurons.
     """
 
-    if traces is None:
-        traces = {
-            "last_pf_spike": cp.full(int(pre_idx.max().item()) + 1, -cp.inf, dtype=cp.float32),
-            "last_pkj_spike": cp.full(int(post_idx.max().item()) + 1, -cp.inf, dtype=cp.float32),
-        }
+    ltd_win = cfg["ltd_window"]["t_pre_cf"]   # e.g. 0.05 (50 ms)
+    ltp_win = cfg["ltp_window"]["t_pre_cf"]   # e.g. 0.45 (450 ms)
 
-    t_now = cp.float32(traces.get("t", 0.0))
+    ltd_scale = cfg["ltd_scale"]
+    ltp_scale = cfg["ltp_scale"]
 
-    # update last-spike times
-    pf_idx_fired = cp.where(pf_spikes)[0]
-    if pf_idx_fired.size > 0:
-        traces["last_pf_spike"][pf_idx_fired] = t_now
+    # --- Update last spike times ---
+    pf_spike_idx = cp.where(pf_spikes)[0]
+    if pf_spike_idx.size > 0:
+        last_pf_spike[pf_spike_idx] = t
 
-    pkj_idx_fired = cp.where(pkj_spikes)[0]
-    if pkj_idx_fired.size > 0:
-        traces["last_pkj_spike"][pkj_idx_fired] = t_now
+    pkj_spike_idx = cp.where(pkj_spikes)[0]
+    if pkj_spike_idx.size > 0:
+        last_pkj_spike[pkj_spike_idx] = t
 
-    # LTD: PF active recently + CF arrives
-    ltd_window = cfg["ltd_window"]["t_pre_cf"]
-    ltp_window = cfg["ltp_window"]["t_pre_cf"]
-    ltd_scale  = cfg["ltd_scale"]
-    ltp_scale  = cfg["ltp_scale"]
+    cf_idx = cp.where(cf_mask)[0]
+    if cf_idx.size > 0:
+        last_cf_spike[cf_idx] = t
 
-    if cf_mask.any():
-        pkj_targets = cp.where(cf_mask)[0]
-        for pkj in pkj_targets:
-            # find PFs connected to this PKJ
-            mask = (post_idx == pkj)
-            pf_connected = pre_idx[mask]
+    # --- LTD: PF before CF ---
+    for cf_post in cf_idx.tolist():
+        pf_candidates = pre_idx[post_idx == cf_post]
+        for pf in pf_candidates.tolist():
+            dt = t - last_pf_spike[pf]
+            if 0 < dt <= ltd_win:
+                mask = (pre_idx == pf) & (post_idx == cf_post)
+                w[mask] -= ltd_scale
 
-            # LTD if PF fired within ltd_window
-            last_pf = traces["last_pf_spike"][pf_connected]
-            dt_pf = t_now - last_pf
-            eligible = (dt_pf >= 0) & (dt_pf <= ltd_window)
-            weights[mask][eligible] -= ltd_scale
+    # --- LTP: PF before PKJ (if no CF this step) ---
+    for pkj in pkj_spike_idx.tolist():
+        if not cf_mask[pkj]:  # only if CF didn’t also arrive
+            pf_candidates = pre_idx[post_idx == pkj]
+            for pf in pf_candidates.tolist():
+                dt = t - last_pf_spike[pf]
+                if 0 < dt <= ltp_win:
+                    mask = (pre_idx == pf) & (post_idx == pkj)
+                    w[mask] += ltp_scale
 
-    # LTP: PF fired, PKJ spiked later (broad window)
-    if pkj_idx_fired.size > 0:
-        for pkj in pkj_idx_fired:
-            mask = (post_idx == pkj)
-            pf_connected = pre_idx[mask]
-            last_pf = traces["last_pf_spike"][pf_connected]
-            dt_pf = t_now - last_pf
-            eligible = (dt_pf >= 0) & (dt_pf <= ltp_window)
-            weights[mask][eligible] += ltp_scale
+    # --- Clip weights to valid range ---
+    w = cp.clip(w, cfg["w_min"], cfg["w_max"])
 
-    # clip weights
-    weights = cp.clip(weights, cfg["w_min"], cfg["w_max"])
-
-    traces["t"] = t_now + dt
-    return weights, traces
+    return w, last_pf_spike, last_pkj_spike, last_cf_spike
