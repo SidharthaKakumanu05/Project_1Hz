@@ -9,14 +9,14 @@ def get_config():
     cfg["N_PF_POOL"] = 4096
 
     cfg["dt"] = 1e-4
-    cfg["T_sec"] = 10
+    cfg["T_sec"] = 300
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])
     cfg["seed"] = 12345
 
     # LIF neuron configs
-    cfg["lif_IO"] = dict(C=200e-12, gL=12e-9, EL=-0.067,
-                         Vth=-0.052, Vreset=-0.070,
-                         refrac_steps=int(0.002 / cfg["dt"]))
+    cfg["lif_IO"] = dict(C=1.0e-9, gL=5.4e-9,EL=-0.067,
+                     Vth=-0.052, Vreset=-0.070,
+                     refrac_steps=int(0.002 / cfg["dt"]))
     cfg["lif_PKJ"] = dict(C=250e-12, gL=14e-9, EL=-0.068,
                           Vth=-0.052, Vreset=-0.072,
                           refrac_steps=int(0.002 / cfg["dt"]))
@@ -53,12 +53,12 @@ def get_config():
     cfg["w_leak"] = 0.0
 
     # --- IO excitability (near threshold) ---
-    cfg["io_bias_current"] = 181e-12     # ~subthreshold; you were at 181e-12
-    cfg["io_noise_std"] = 40e-12      # A/√s, diffusion-style current noise
-    cfg["io_bias_jitter_std"] = 10e-12      # A, fixed per-neuron offset
+    cfg["io_bias_current"] = 82e-12     # ~subthreshold; you were at 181e-12
+    cfg["io_noise_std"] = 2e-12      # A/√s, diffusion-style current noise
+    cfg["io_bias_jitter_std"] = 0.3e-12      # A, fixed per-neuron offset
 
     # Gap coupling (not too strong or they'll synchronize too much)
-    cfg["g_gap_IO"] = 2.5e-9      # was 3e-9 earlier; lighten a bit
+    cfg["g_gap_IO"] = 1e-10
 
 
     # Plasticity windows & scales

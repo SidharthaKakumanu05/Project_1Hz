@@ -28,6 +28,23 @@ def run():
     # Build connectivity graph
     graph = build_connectivity(cfg)
 
+    for i in range(3):  # check first few IOs
+        C = cfg["lif_IO"]["C"]
+        gL = cfg["lif_IO"]["gL"]
+        Vth = cfg["lif_IO"]["Vth"]
+        EL = cfg["lif_IO"]["EL"]
+        Vreset = cfg["lif_IO"]["Vreset"]
+        I_bias = cfg["io_bias_current"]
+
+        tau = C / gL
+        I_rheo = gL * (Vth - EL)
+
+    from math import log
+    T = tau * log((I_bias - gL*(Vreset - EL)) / (I_bias - I_rheo))
+    print(f"IO[{i}] tau={tau*1e3:.1f} ms, I_rheo={I_rheo*1e12:.1f} pA, "
+          f"I_bias={I_bias*1e12:.1f} pA, predicted rate={1/T:.2f} Hz")
+
+
     # Neuron populations
     IO  = NeuronState(N_CF,  cfg["lif_IO"])
     PKJ = NeuronState(N_PKJ, cfg["lif_PKJ"])
