@@ -63,4 +63,6 @@ Below is the **big picture pipeline** of how the code runs:
 
 1. Run the simulation:
    ```bash
-   python main.py
+   python3 main.py
+
+<img width="2579" height="1771" alt="SIM_DIAGRAM" src="https://github.com/user-attachments/assets/8069243c-2711-409e-a006-13160d92dfe2" />
