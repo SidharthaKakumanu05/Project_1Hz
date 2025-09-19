@@ -7,69 +7,50 @@ def update_pfpkj_plasticity(
     last_pf_spike, last_pkj_spike, last_cf_spike
 ):
     """
-    PF->PKJ plasticity using last-spike STDP rule.
-
-    Parameters
-    ----------
-    w : cp.ndarray
-        Synaptic weights for PF->PKJ.
-    pre_idx : cp.ndarray
-        Indices of presynaptic PFs.
-    post_idx : cp.ndarray
-        Indices of postsynaptic PKJs.
-    pf_spikes : cp.ndarray (bool)
-        Spikes from PF pool this step.
-    pkj_spikes : cp.ndarray (bool)
-        Spikes from PKJ cells this step.
-    cf_mask : cp.ndarray (bool)
-        Mask of PKJs that received CF input this step.
-    t : float
-        Current simulation time (s).
-    cfg : dict
-        Simulation config dictionary.
-    last_pf_spike, last_pkj_spike, last_cf_spike : cp.ndarray
-        Last spike times for PF, PKJ, and CF neurons.
+    Vectorized PF->PKJ plasticity (LTP/LTD).
     """
 
-    ltd_win = cfg["ltd_window"]["t_pre_cf"]   # e.g. 0.05 (50 ms)
-    ltp_win = cfg["ltp_window"]["t_pre_cf"]   # e.g. 0.45 (450 ms)
-
-    ltd_scale = cfg["ltd_scale"]
-    ltp_scale = cfg["ltp_scale"]
+    # --- Config params (match your config.py layout) ---
+    ltd_win   = cp.float32(cfg["ltd_window"]["t_pre_cf"])
+    ltp_win   = cp.float32(cfg["ltp_window"]["t_pre_cf"])
+    ltd_scale = cp.float32(cfg["ltd_scale"])
+    ltp_scale = cp.float32(cfg["ltp_scale"])
+    w_min     = cp.float32(cfg["w_min"])
+    w_max     = cp.float32(cfg["w_max"])
 
     # --- Update last spike times ---
-    pf_spike_idx = cp.where(pf_spikes)[0]
-    if pf_spike_idx.size > 0:
-        last_pf_spike[pf_spike_idx] = t
-
-    pkj_spike_idx = cp.where(pkj_spikes)[0]
-    if pkj_spike_idx.size > 0:
-        last_pkj_spike[pkj_spike_idx] = t
-
-    cf_idx = cp.where(cf_mask)[0]
-    if cf_idx.size > 0:
+    if pf_spikes.any():
+        last_pf_spike = last_pf_spike.copy()
+        last_pf_spike[pf_spikes] = t
+    if pkj_spikes.any():
+        last_pkj_spike = last_pkj_spike.copy()
+        last_pkj_spike[pkj_spikes] = t
+    if cf_mask.any():
+        cf_idx = cp.where(cf_mask)[0]
         last_cf_spike[cf_idx] = t
 
+    # --- Precompute PF recency per synapse ---
+    dt_pf = t - last_pf_spike[pre_idx]
+
     # --- LTD: PF before CF ---
-    for cf_post in cf_idx.tolist():
-        pf_candidates = pre_idx[post_idx == cf_post]
-        for pf in pf_candidates.tolist():
-            dt = t - last_pf_spike[pf]
-            if 0 < dt <= ltd_win:
-                mask = (pre_idx == pf) & (post_idx == cf_post)
-                w[mask] -= ltd_scale
+    if cf_mask.any():
+        posts_cf = cf_mask[post_idx]                # synapses targeting PKJs that got CF
+        ltd_mask = posts_cf & (dt_pf > 0) & (dt_pf <= ltd_win)
+        if ltd_mask.any():
+            w = w.copy()
+            w[ltd_mask] -= ltd_scale
 
-    # --- LTP: PF before PKJ (if no CF this step) ---
-    for pkj in pkj_spike_idx.tolist():
-        if not cf_mask[pkj]:  # only if CF didn’t also arrive
-            pf_candidates = pre_idx[post_idx == pkj]
-            for pf in pf_candidates.tolist():
-                dt = t - last_pf_spike[pf]
-                if 0 < dt <= ltp_win:
-                    mask = (pre_idx == pf) & (post_idx == pkj)
-                    w[mask] += ltp_scale
+    # --- LTP: PF before PKJ (only if no CF) ---
+    if pkj_spikes.any():
+        pkj_valid = pkj_spikes & (~cf_mask)
+        if pkj_valid.any():
+            posts_spike_no_cf = pkj_valid[post_idx]
+            ltp_mask = posts_spike_no_cf & (dt_pf > 0) & (dt_pf <= ltp_win)
+            if ltp_mask.any():
+                w = w.copy()
+                w[ltp_mask] += ltp_scale
 
-    # --- Clip weights to valid range ---
-    w = cp.clip(w, cfg["w_min"], cfg["w_max"])
+    # --- Clip weights ---
+    w = cp.clip(w, w_min, w_max)
 
     return w, last_pf_spike, last_pkj_spike, last_cf_spike

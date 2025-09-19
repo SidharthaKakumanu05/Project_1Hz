@@ -1,6 +1,9 @@
 import os
+import time
 import cupy as cp
 from tqdm import tqdm
+from math import log
+
 from config import get_config
 from neurons import NeuronState, lif_step
 from synapses import SynapseProj
@@ -28,7 +31,8 @@ def run():
     # Build connectivity graph
     graph = build_connectivity(cfg)
 
-    for i in range(3):  # check first few IOs
+    # Quick IO rheobase check
+    for i in range(min(3, N_CF)):
         C = cfg["lif_IO"]["C"]
         gL = cfg["lif_IO"]["gL"]
         Vth = cfg["lif_IO"]["Vth"]
@@ -38,12 +42,9 @@ def run():
 
         tau = C / gL
         I_rheo = gL * (Vth - EL)
-
-    from math import log
-    T = tau * log((I_bias - gL*(Vreset - EL)) / (I_bias - I_rheo))
-    print(f"IO[{i}] tau={tau*1e3:.1f} ms, I_rheo={I_rheo*1e12:.1f} pA, "
-          f"I_bias={I_bias*1e12:.1f} pA, predicted rate={1/T:.2f} Hz")
-
+        T = tau * log((I_bias - gL * (Vreset - EL)) / (I_bias - I_rheo))
+        print(f"IO[{i}] tau={tau*1e3:.1f} ms, I_rheo={I_rheo*1e12:.1f} pA, "
+              f"I_bias={I_bias*1e12:.1f} pA, predicted rate={1/T:.2f} Hz")
 
     # Neuron populations
     IO  = NeuronState(N_CF,  cfg["lif_IO"])
@@ -51,7 +52,7 @@ def run():
     BC  = NeuronState(N_BC,  cfg["lif_BC"])
     DCN = NeuronState(N_DCN, cfg["lif_DCN"])
 
-    # Synapses (no rng kwargs anywhere)
+    # Synapses
     cfpkj = SynapseProj(
         graph["CF_to_PKJ"]["pre_idx"], graph["CF_to_PKJ"]["post_idx"],
         w_init=cp.full(N_CF, 8e-9, dtype=cp.float32),
@@ -79,7 +80,7 @@ def run():
 
     bcpkj = SynapseProj(
         graph["BC_to_PKJ"]["pre_idx"], graph["BC_to_PKJ"]["post_idx"],
-        w_init=graph["BC_to_PKJ"]["g"],   # per-synapse inhibitory conductances
+        w_init=graph["BC_to_PKJ"]["g"],
         E_rev=cfg["syn_BC_PKJ"]["E_rev"],
         tau=cfg["syn_BC_PKJ"]["tau"],
         delay_steps=cfg["syn_BC_PKJ"]["delay_steps"]
@@ -121,12 +122,25 @@ def run():
     else:
         pairs = cp.zeros((0, 2), dtype=cp.int32)
 
-    rec = Recorder(cfg)
+    # ✅ Multi-population recorder
+    pop_sizes = {
+        "PF": cfg["N_PF_POOL"],
+        "PKJ": N_PKJ,
+        "IO": N_CF,
+        "BC": N_BC,
+        "DCN": N_DCN,
+    }
+    rec = Recorder(T_steps, pop_sizes, log_stride=10, rec_weight_every=cfg["rec_weight_every_steps"])
+    rec.start_timer()
 
-    # Last-spike trackers for last-spike STDP
+    # Last-spike trackers
     last_pf_spike  = cp.full(cfg["N_PF_POOL"], -cp.inf, dtype=cp.float32)
     last_pkj_spike = cp.full(cfg["N_PKJ"],     -cp.inf, dtype=cp.float32)
     last_cf_spike  = cp.full(cfg["N_CF"],      -cp.inf, dtype=cp.float32)
+
+    cf_to_pkj_mask = cp.zeros(N_PKJ, dtype=cp.bool_)
+
+    t0 = time.perf_counter()
 
     for step in tqdm(range(T_steps), desc="Simulating", unit="steps"):
         sim_t = step * dt
@@ -141,12 +155,11 @@ def run():
 
         # PF & MF
         pf_spike_pool = step_pf_coinflip(pf_state, cfg["pf_rate_hz"], dt)
-        rec.log_spikes("PF", pf_spike_pool)
+        rec.log_spikes(step, "PF", pf_spike_pool)
         if cp.any(pf_spike_pool):
             pfpkj.enqueue_from_pre_spikes(pf_spike_pool, scale=pf_con_g)
             pfbc.enqueue_from_pre_spikes(pf_spike_pool)
 
-        # MF must match MF_to_DCN pre pool size (we set it to N_DCN in connectivity)
         mf_spike = step_mf_poisson(cfg["N_DCN"], cfg["mf_rate_hz"], dt)
         if cp.any(mf_spike):
             mfdcn.enqueue_from_pre_spikes(mf_spike)
@@ -156,7 +169,7 @@ def run():
         I_bc = simulate_current_from_proj(pfbc, BC.V)
         BC = lif_step(BC, I_syn=I_bc, I_ext=cp.zeros(N_BC, dtype=cp.float32), dt=dt, lif_cfg=cfg["lif_BC"])
         if cp.any(BC.spike):
-            bcpkj.enqueue_from_pre_spikes(BC.spike)  # weights are baked into bcpkj.w
+            bcpkj.enqueue_from_pre_spikes(BC.spike)
 
         # Purkinje cells
         cfpkj.step_decay(); bcpkj.step_decay(); pfpkj.step_decay()
@@ -174,14 +187,13 @@ def run():
         I_dcn = simulate_current_from_proj(pkjdcn, DCN.V) + simulate_current_from_proj(mfdcn, DCN.V)
         DCN = lif_step(DCN, I_syn=I_dcn, I_ext=cp.zeros(N_DCN, dtype=cp.float32), dt=dt, lif_cfg=cfg["lif_DCN"])
 
-        # CF mask over PKJ targets this step
-        cf_to_pkj_mask = cp.zeros(N_PKJ, dtype=bool)
+        # CF mask
+        cf_to_pkj_mask.fill(False)
         if cp.any(cf_spike):
-            # direct boolean index from CF spikes → PKJ targets
             pkj_targets = cfpkj.post_idx[cf_spike]
             cf_to_pkj_mask[pkj_targets] = True
 
-        # Last-spike STDP update (plasticity.py)
+        # Plasticity
         pfpkj.w, last_pf_spike, last_pkj_spike, last_cf_spike = update_pfpkj_plasticity(
             pfpkj.w, pfpkj.pre_idx, pfpkj.post_idx,
             pf_spike_pool, PKJ.spike, cf_to_pkj_mask,
@@ -189,16 +201,24 @@ def run():
             last_pf_spike, last_pkj_spike, last_cf_spike
         )
 
-        # Recorders
-        rec.log_spikes("IO",  IO.spike)
-        rec.log_spikes("PKJ", PKJ.spike)
-        rec.log_spikes("BC",  BC.spike)
-        rec.log_spikes("DCN", DCN.spike)
+        # Record
+        rec.log_spikes(step, "IO", IO.spike)
+        rec.log_spikes(step, "PKJ", PKJ.spike)
+        rec.log_spikes(step, "BC", BC.spike)
+        rec.log_spikes(step, "DCN", DCN.spike)
         rec.maybe_log_weights(step, pfpkj.w)
+
+    # Timing summary
+    elapsed, steps_per_sec = rec.stop_and_summary(T_steps)
 
     out_npz = "cbm_py_output.npz"
     rec.finalize_npz(out_npz)
-    return {"out_npz": os.path.abspath(out_npz)}
+
+    return {
+        "out_npz": os.path.abspath(out_npz),
+        "elapsed_sec": elapsed,
+        "steps_per_sec": steps_per_sec,
+    }
 
 
 if __name__ == "__main__":

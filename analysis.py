@@ -3,12 +3,13 @@ import cupy as cp
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+from config import get_config
 
 
 # ---------- IO raster with per-neuron frequencies ----------
-def plot_io_raster_with_freq(spikes, dt, fname, outdir):
+def plot_io_raster_with_freq(spikes, dt, log_stride, fname, outdir):
     T, N = spikes.shape
-    t = cp.arange(T) * dt
+    t = cp.arange(T) * dt * log_stride
     fig, ax = plt.subplots(figsize=(12, 6))
 
     spikes_np = cp.asnumpy(spikes)
@@ -17,7 +18,7 @@ def plot_io_raster_with_freq(spikes, dt, fname, outdir):
         ax.vlines(cp.asnumpy(spk_times), n, n + 0.9, color="black", linewidth=0.3)
 
     # compute firing frequencies
-    freqs = spikes.sum(axis=0).get() / (T * dt)
+    freqs = spikes_np.sum(axis=0) / (T * dt * log_stride)
     yticks = range(N)
     ax.set_yticks(yticks)
     ax.set_yticklabels([f"{i} ({freqs[i]:.1f} Hz)" for i in yticks])
@@ -31,9 +32,9 @@ def plot_io_raster_with_freq(spikes, dt, fname, outdir):
 
 
 # ---------- PKJ raster ----------
-def plot_pkj_raster(spikes, dt, fname, outdir):
+def plot_pkj_raster(spikes, dt, log_stride, fname, outdir):
     T, N = spikes.shape
-    t = cp.arange(T) * dt
+    t = cp.arange(T) * dt * log_stride
     fig, ax = plt.subplots(figsize=(12, 4))
 
     spikes_np = cp.asnumpy(spikes)
@@ -50,9 +51,9 @@ def plot_pkj_raster(spikes, dt, fname, outdir):
 
 
 # ---------- PF raster (subsampled random neurons) ----------
-def plot_pf_raster(spikes, dt, fname, outdir):
+def plot_pf_raster(spikes, dt, log_stride, fname, outdir):
     T, N = spikes.shape
-    t = cp.arange(T) * dt
+    t = cp.arange(T) * dt * log_stride
     fig, ax = plt.subplots(figsize=(12, 4))
 
     spikes_np = cp.asnumpy(spikes)
@@ -139,31 +140,33 @@ def analyze(npz_path, outdir="analysis_outputs"):
         os.makedirs(outdir)
 
     np_data = np.load(npz_path, allow_pickle=True)
-    dt = 1e-4
-    every_steps = int(0.01 / dt)
+    cfg = get_config()
+    dt = cfg["dt"]
+    log_stride = 10  # must match Recorder
+    every_steps = cfg["rec_weight_every_steps"]
 
     start = time.time()
 
     # IO
     if "IO_spikes" in np_data:
-        spikes = np_data["IO_spikes"][:, :50]  # only first 50 neurons
-        plot_io_raster_with_freq(cp.asarray(spikes), dt, "io_raster.png", outdir)
+        spikes = np_data["IO_spikes"][:, :50]  # first 50 neurons
+        plot_io_raster_with_freq(cp.asarray(spikes), dt, log_stride, "io_raster.png", outdir)
 
     # PKJ
     if "PKJ_spikes" in np_data:
         spikes = np_data["PKJ_spikes"][:, :200]  # first 200 neurons
-        plot_pkj_raster(cp.asarray(spikes), dt, "pkj_raster.png", outdir)
+        plot_pkj_raster(cp.asarray(spikes), dt, log_stride, "pkj_raster.png", outdir)
 
     # PF
     if "PF_spikes" in np_data:
         N = np_data["PF_spikes"].shape[1]
         sel = np.random.choice(N, size=min(200, N), replace=False)
         spikes = np_data["PF_spikes"][:, sel]
-        plot_pf_raster(cp.asarray(spikes), dt, "pf_raster.png", outdir)
+        plot_pf_raster(cp.asarray(spikes), dt, log_stride, "pf_raster.png", outdir)
 
     # Weights
-    if "PF_PKJ_weights" in np_data:
-        weights = np_data["PF_PKJ_weights"]
+    if "weights" in np_data:  # Recorder saves this as "weights"
+        weights = np_data["weights"]
         plot_weights(weights, dt, every_steps, outdir)
 
     # IO pair trace
