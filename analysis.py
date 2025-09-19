@@ -6,18 +6,25 @@ import time
 from config import get_config
 
 
-# ---------- IO raster with per-neuron frequencies ----------
+# --------------------------------------------
+# IO raster plot with per-neuron frequencies
+# --------------------------------------------
 def plot_io_raster_with_freq(spikes, dt, log_stride, fname, outdir):
+    """
+    Plot a raster of IO spikes and label each neuron with its firing rate.
+    """
     T, N = spikes.shape
-    t = cp.arange(T) * dt * log_stride
-    fig, ax = plt.subplots(figsize=(12, 6))
+    t = cp.arange(T) * dt * log_stride   # time vector (seconds)
 
+    fig, ax = plt.subplots(figsize=(12, 6))
     spikes_np = cp.asnumpy(spikes)
+
+    # Draw vertical lines for each spike
     for n in range(N):
         spk_times = t[spikes_np[:, n] > 0]
         ax.vlines(cp.asnumpy(spk_times), n, n + 0.9, color="black", linewidth=0.3)
 
-    # compute firing frequencies
+    # Compute average firing frequency per neuron
     freqs = spikes_np.sum(axis=0) / (T * dt * log_stride)
     yticks = range(N)
     ax.set_yticks(yticks)
@@ -31,13 +38,19 @@ def plot_io_raster_with_freq(spikes, dt, log_stride, fname, outdir):
     plt.close(fig)
 
 
-# ---------- PKJ raster ----------
+# --------------------------------------------
+# PKJ raster plot
+# --------------------------------------------
 def plot_pkj_raster(spikes, dt, log_stride, fname, outdir):
+    """
+    Plot a raster of PKJ spikes (subset of neurons).
+    """
     T, N = spikes.shape
     t = cp.arange(T) * dt * log_stride
-    fig, ax = plt.subplots(figsize=(12, 4))
 
+    fig, ax = plt.subplots(figsize=(12, 4))
     spikes_np = cp.asnumpy(spikes)
+
     for n in range(N):
         spk_times = t[spikes_np[:, n] > 0]
         ax.vlines(cp.asnumpy(spk_times), n, n + 0.9, color="black", linewidth=0.3)
@@ -50,13 +63,19 @@ def plot_pkj_raster(spikes, dt, log_stride, fname, outdir):
     plt.close(fig)
 
 
-# ---------- PF raster (subsampled random neurons) ----------
+# --------------------------------------------
+# PF raster plot (subset)
+# --------------------------------------------
 def plot_pf_raster(spikes, dt, log_stride, fname, outdir):
+    """
+    Plot a raster of PF spikes for a subset of neurons (randomly selected).
+    """
     T, N = spikes.shape
     t = cp.arange(T) * dt * log_stride
-    fig, ax = plt.subplots(figsize=(12, 4))
 
+    fig, ax = plt.subplots(figsize=(12, 4))
     spikes_np = cp.asnumpy(spikes)
+
     for n in range(N):
         spk_times = t[spikes_np[:, n] > 0]
         ax.vlines(cp.asnumpy(spk_times), n, n + 0.9, color="black", linewidth=0.3)
@@ -69,12 +88,19 @@ def plot_pf_raster(spikes, dt, log_stride, fname, outdir):
     plt.close(fig)
 
 
-# ---------- weights plotting (batch-safe) ----------
+# --------------------------------------------
+# PF→PKJ weights plotting
+# --------------------------------------------
 def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
+    """
+    Plot synaptic weights over time:
+    - individual traces for a subset of synapses
+    - mean ± std envelope across all synapses
+    """
     n_snapshots, M = weights.shape
     t = np.arange(n_snapshots) * every_steps * dt
 
-    # individual traces
+    # ---- Individual traces ----
     fig, ax = plt.subplots(figsize=(10, 4))
     n_plot = min(M, max_plot)
     for i in range(n_plot):
@@ -86,10 +112,9 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
     fig.savefig(os.path.join(outdir, "weights_individual.png"), dpi=200)
     plt.close(fig)
 
-    # mean ± std (batch if too large)
-    batch = 1000
-    means = []
-    stds = []
+    # ---- Mean ± std envelope ----
+    batch = 1000  # compute mean/std in chunks to save memory
+    means, stds = [], []
     for i in range(0, M, batch):
         chunk = weights[:, i:i + batch]
         means.append(chunk.mean(axis=1))
@@ -111,20 +136,28 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
     plt.close(fig)
 
 
-# ---------- IO pair voltage trace ----------
+# --------------------------------------------
+# IO pair voltage traces
+# --------------------------------------------
 def plot_io_pair(npz_path, outdir):
+    """
+    Plot the voltage traces of two IO neurons (if available).
+    """
     data = np.load(npz_path, allow_pickle=True)
     if "io_voltage_trace" not in data:
         print("No IO voltage trace found in this file.")
         return
+
     trace = data["io_voltage_trace"]
     t = trace[:, 0]
     v0 = trace[:, 1]
     v1 = trace[:, 2]
+
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.plot(t, v0, label="IO neuron i0")
     ax.plot(t, v1, label="IO neuron i1")
     ax.axhline(-0.052, color="r", ls="--", label="Threshold")
+
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Voltage (V)")
     ax.set_title("Coupled IO voltages")
@@ -134,8 +167,18 @@ def plot_io_pair(npz_path, outdir):
     plt.close(fig)
 
 
-# ---------- main analysis ----------
+# --------------------------------------------
+# Main analysis driver
+# --------------------------------------------
 def analyze(npz_path, outdir="analysis_outputs"):
+    """
+    Load simulation outputs (.npz) and produce plots:
+    - IO raster with frequencies
+    - PKJ raster
+    - PF raster (subset)
+    - weight traces
+    - IO voltage trace (if present)
+    """
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
@@ -147,34 +190,37 @@ def analyze(npz_path, outdir="analysis_outputs"):
 
     start = time.time()
 
-    # IO
+    # IO spikes
     if "IO_spikes" in np_data:
-        spikes = np_data["IO_spikes"][:, :50]  # first 50 neurons
+        spikes = np_data["IO_spikes"][:, :50]  # plot first 50 neurons
         plot_io_raster_with_freq(cp.asarray(spikes), dt, log_stride, "io_raster.png", outdir)
 
-    # PKJ
+    # PKJ spikes
     if "PKJ_spikes" in np_data:
-        spikes = np_data["PKJ_spikes"][:, :200]  # first 200 neurons
+        spikes = np_data["PKJ_spikes"][:, :200]  # plot first 200 neurons
         plot_pkj_raster(cp.asarray(spikes), dt, log_stride, "pkj_raster.png", outdir)
 
-    # PF
+    # PF spikes
     if "PF_spikes" in np_data:
         N = np_data["PF_spikes"].shape[1]
         sel = np.random.choice(N, size=min(200, N), replace=False)
         spikes = np_data["PF_spikes"][:, sel]
         plot_pf_raster(cp.asarray(spikes), dt, log_stride, "pf_raster.png", outdir)
 
-    # Weights
-    if "weights" in np_data:  # Recorder saves this as "weights"
+    # PF→PKJ weights
+    if "weights" in np_data:
         weights = np_data["weights"]
         plot_weights(weights, dt, every_steps, outdir)
 
-    # IO pair trace
+    # IO voltage trace
     plot_io_pair(npz_path, outdir)
 
     elapsed = time.time() - start
     print(f"Analysis complete in {elapsed:.1f} seconds. PNGs saved to {outdir}")
 
 
+# --------------------------------------------
+# Script entry point
+# --------------------------------------------
 if __name__ == "__main__":
     analyze("cbm_py_output.npz")
