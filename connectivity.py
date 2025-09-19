@@ -37,6 +37,7 @@ def build_connectivity(cfg):
     bc_pre  = rng.integers(0, N_BC, size=bc_conn * N_PKJ, dtype=np.int32)
     bc_post = np.repeat(np.arange(N_PKJ, dtype=np.int32), bc_conn)
     bc_g = rng.normal(cfg["bc_g_mean"], cfg["bc_g_std"], size=bc_conn * N_PKJ)
+    bc_g = bc_g * cfg["bc_pkj_g_scale"]
     bc_g = cp.asarray(np.clip(bc_g, 0, None), dtype=cp.float32)
 
     graph["BC_to_PKJ"] = {
