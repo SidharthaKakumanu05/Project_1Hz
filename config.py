@@ -27,7 +27,7 @@ def get_config():
     # Time settings
     # -----------------------------
     cfg["dt"] = 1e-4                  # time step (0.1 ms)
-    cfg["T_sec"] = 315                # total simulation length in seconds
+    cfg["T_sec"] = 5                # total simulation length in seconds
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])  # number of simulation steps
     cfg["seed"] = 12345               # random seed (reproducibility)
 
@@ -63,6 +63,7 @@ def get_config():
     cfg["syn_CF_PKJ"] = dict(tau=2e-3,  E_rev=0.0,    delay_steps=int(2e-3 / cfg["dt"]))
     cfg["syn_PKJ_DCN"]= dict(tau=12e-3, E_rev=-0.075, delay_steps=int(2e-3 / cfg["dt"]))
     cfg["syn_MF_DCN"] = dict(tau=6e-3,  E_rev=0.0,    delay_steps=int(1e-3 / cfg["dt"]))
+    cfg["syn_DCN_IO"] = dict(tau=15e-3, E_rev=-0.075, delay_steps=int(3e-3 / cfg["dt"]))
 
     # -----------------------------
     # Input rates and conductance distributions
@@ -91,9 +92,16 @@ def get_config():
     # -----------------------------
     # IO (Inferior Olive) excitability
     # -----------------------------
-    cfg["io_bias_current"] = 81.5e-12     # constant bias current (pA scale)
+    cfg["io_bias_current"] = 83e-12       # constant bias current (pA scale)
     cfg["io_noise_std"] = 2e-12           # current noise (diffusion-like)
     cfg["io_bias_jitter_std"] = 0.3e-12   # static jitter per-neuron
+
+    # -----------------------------
+    # DCN (Deep Cerebellar Nuclei) excitability
+    # -----------------------------
+    # DCN rheobase: gL * (Vth - EL) = 10e-9 * (-0.048 - (-0.060)) = 1.2e-10 A
+    # Add moderate bias current to keep DCN neurons near threshold
+    cfg["dcn_bias_current"] = 0.8e-10     # bias current (80 pA, below rheobase)
 
     # -----------------------------
     # Gap-junction coupling between IO neurons

@@ -28,7 +28,7 @@ def plot_io_raster_with_freq(spikes, dt, log_stride, fname, outdir):
     freqs = spikes_np.sum(axis=0) / (T * dt * log_stride)
     yticks = range(N)
     ax.set_yticks(yticks)
-    ax.set_yticklabels([f"{i} ({freqs[i]:.1f} Hz)" for i in yticks])
+    ax.set_yticklabels([f"{i} ({freqs[i]:.3f} Hz)" for i in yticks])
 
     ax.set_title("IO raster (with per-neuron firing rates)")
     ax.set_xlabel("Time (s)")
@@ -83,6 +83,70 @@ def plot_pf_raster(spikes, dt, log_stride, fname, outdir):
     ax.set_title(f"PF raster (random {N} neurons)")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Neuron index (subset)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, fname), dpi=200)
+    plt.close(fig)
+
+
+# --------------------------------------------
+# DCN raster plot with per-neuron frequencies
+# --------------------------------------------
+def plot_dcn_raster_with_freq(spikes, dt, log_stride, fname, outdir):
+    """
+    Plot a raster of DCN spikes and label each neuron with its firing rate.
+    """
+    T, N = spikes.shape
+    t = cp.arange(T) * dt * log_stride   # time vector (seconds)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    spikes_np = cp.asnumpy(spikes)
+
+    # Draw vertical lines for each spike
+    for n in range(N):
+        spk_times = t[spikes_np[:, n] > 0]
+        ax.vlines(cp.asnumpy(spk_times), n, n + 0.9, color="red", linewidth=0.5)
+
+    # Compute average firing frequency per neuron
+    freqs = spikes_np.sum(axis=0) / (T * dt * log_stride)
+    yticks = range(N)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels([f"{i} ({freqs[i]:.3f} Hz)" for i in yticks])
+
+    ax.set_title("DCN raster (with per-neuron firing rates)")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Neuron index (Hz)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, fname), dpi=200)
+    plt.close(fig)
+
+
+# --------------------------------------------
+# PKJ mean firing rate over time
+# --------------------------------------------
+def plot_pkj_mean_rate(spikes, dt, log_stride, fname, outdir, window_size=100):
+    """
+    Plot the mean firing rate of PKJ neurons over time using a sliding window.
+    """
+    T, N = spikes.shape
+    t = cp.arange(T) * dt * log_stride   # time vector (seconds)
+    
+    # Calculate mean firing rate using sliding window
+    window_steps = window_size
+    mean_rates = []
+    time_points = []
+    
+    for i in range(window_steps, T):
+        window_spikes = spikes[i-window_steps:i, :]
+        window_rate = cp.mean(window_spikes) / (dt * log_stride)  # spikes per second
+        mean_rates.append(cp.asnumpy(window_rate))
+        time_points.append(cp.asnumpy(t[i]))
+    
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(time_points, mean_rates, color='blue', linewidth=1.5)
+    ax.set_title("PKJ mean firing rate over time")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Mean firing rate (Hz)")
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, fname), dpi=200)
     plt.close(fig)
@@ -173,9 +237,11 @@ def plot_io_pair(npz_path, outdir):
 def analyze(npz_path, outdir="analysis_outputs"):
     """
     Load simulation outputs (.npz) and produce plots:
-    - IO raster with frequencies
+    - IO raster with frequencies (3 decimal places)
     - PKJ raster
+    - PKJ mean firing rate over time
     - PF raster (subset)
+    - DCN raster with frequencies (3 decimal places)
     - weight traces
     - IO voltage trace (if present)
     """
@@ -199,6 +265,10 @@ def analyze(npz_path, outdir="analysis_outputs"):
     if "PKJ_spikes" in np_data:
         spikes = np_data["PKJ_spikes"][:, :200]  # plot first 200 neurons
         plot_pkj_raster(cp.asarray(spikes), dt, log_stride, "pkj_raster.png", outdir)
+        
+        # PKJ mean firing rate over time
+        all_pkj_spikes = np_data["PKJ_spikes"]  # use all PKJ neurons for mean rate
+        plot_pkj_mean_rate(cp.asarray(all_pkj_spikes), dt, log_stride, "pkj_mean_rate.png", outdir)
 
     # PF spikes
     if "PF_spikes" in np_data:
@@ -206,6 +276,11 @@ def analyze(npz_path, outdir="analysis_outputs"):
         sel = np.random.choice(N, size=min(200, N), replace=False)
         spikes = np_data["PF_spikes"][:, sel]
         plot_pf_raster(cp.asarray(spikes), dt, log_stride, "pf_raster.png", outdir)
+
+    # DCN spikes
+    if "DCN_spikes" in np_data:
+        spikes = np_data["DCN_spikes"]  # plot all DCN neurons (there are only 8)
+        plot_dcn_raster_with_freq(cp.asarray(spikes), dt, log_stride, "dcn_raster.png", outdir)
 
     # PF→PKJ weights
     if "weights" in np_data:

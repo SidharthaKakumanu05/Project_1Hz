@@ -106,7 +106,7 @@ def run():
     # Purkinje -> DCN (inhibitory)
     pkjdcn = SynapseProj(
         graph["PKJ_to_DCN"]["pre_idx"], graph["PKJ_to_DCN"]["post_idx"],
-        w_init=cp.full(graph["PKJ_to_DCN"]["pre_idx"].size, 9e-9, dtype=cp.float32),
+        w_init=cp.full(graph["PKJ_to_DCN"]["pre_idx"].size, 3e-9, dtype=cp.float32),  # reduced inhibition
         E_rev=cfg["syn_PKJ_DCN"]["E_rev"],
         tau=cfg["syn_PKJ_DCN"]["tau"],
         delay_steps=cfg["syn_PKJ_DCN"]["delay_steps"]
@@ -115,10 +115,19 @@ def run():
     # Mossy fiber -> DCN (excitatory)
     mfdcn = SynapseProj(
         graph["MF_to_DCN"]["pre_idx"], graph["MF_to_DCN"]["post_idx"],
-        w_init=cp.full(graph["MF_to_DCN"]["pre_idx"].size, cfg["mf_g_mean"], dtype=cp.float32),
+        w_init=cp.full(graph["MF_to_DCN"]["pre_idx"].size, cfg["mf_g_mean"] * 2.0, dtype=cp.float32),  # increased excitation
         E_rev=cfg["syn_MF_DCN"]["E_rev"],
         tau=cfg["syn_MF_DCN"]["tau"],
         delay_steps=cfg["syn_MF_DCN"]["delay_steps"]
+    )
+
+    # DCN -> IO (inhibitory feedback)
+    dcnio = SynapseProj(
+        graph["DCN_to_IO"]["pre_idx"], graph["DCN_to_IO"]["post_idx"],
+        w_init=cp.full(graph["DCN_to_IO"]["pre_idx"].size, 1.5e-9, dtype=cp.float32),  # reduced inhibitory strength
+        E_rev=cfg["syn_DCN_IO"]["E_rev"],
+        tau=cfg["syn_DCN_IO"]["tau"],
+        delay_steps=cfg["syn_DCN_IO"]["delay_steps"]
     )
 
     # --- Precompute decay factors for all synapse exponentials (alpha = exp(-dt/tau)) ---
@@ -129,6 +138,7 @@ def run():
         (bcpkj, cfg["syn_BC_PKJ"]),
         (pkjdcn,cfg["syn_PKJ_DCN"]),
         (mfdcn, cfg["syn_MF_DCN"]),
+        (dcnio, cfg["syn_DCN_IO"]),
     ]:
         proj.set_alpha(cp.exp(-dt / syn_cfg["tau"]).astype(cp.float32))  # cast ensures float32 on GPU
 
@@ -170,9 +180,11 @@ def run():
         sim_t = step * dt  # current sim time in seconds
 
         # ----- Inferior Olive (IO) update -----
+        dcnio.step_decay()                                 # decay DCN->IO conductances
         I_gap   = apply_ohmic_coupling(IO.V, pairs, cfg["g_gap_IO"])          # gap-junction currents
+        I_dcnio = simulate_current_from_proj(dcnio, IO.V)  # DCN->IO inhibition
         I_extio = cp.full(IO.V.size, cfg["io_bias_current"], dtype=cp.float32) # tonic bias current
-        IO = lif_step(IO, I_syn=I_gap, I_ext=I_extio, dt=dt, lif_cfg=cfg["lif_IO"])
+        IO = lif_step(IO, I_syn=I_gap + I_dcnio, I_ext=I_extio, dt=dt, lif_cfg=cfg["lif_IO"])
         cf_spike = IO.spike.copy()  # CF spikes are IO spikes
         if cp.any(cf_spike):
             cfpkj.enqueue_from_pre_spikes(cf_spike)  # schedule CF→PKJ events with synaptic delay
@@ -214,7 +226,12 @@ def run():
             pkjdcn.enqueue_from_pre_spikes(PKJ.spike)      # PKJ inhibit DCN when they spike
         pkjdcn.step_decay(); mfdcn.step_decay()
         I_dcn = simulate_current_from_proj(pkjdcn, DCN.V) + simulate_current_from_proj(mfdcn, DCN.V)
-        DCN = lif_step(DCN, I_syn=I_dcn, I_ext=cp.zeros(N_DCN, dtype=cp.float32), dt=dt, lif_cfg=cfg["lif_DCN"])
+        I_ext_dcn = cp.full(N_DCN, cfg["dcn_bias_current"], dtype=cp.float32)  # DCN bias current
+        DCN = lif_step(DCN, I_syn=I_dcn, I_ext=I_ext_dcn, dt=dt, lif_cfg=cfg["lif_DCN"])
+        
+        # DCN -> IO inhibition (feedback loop)
+        if cp.any(DCN.spike):
+            dcnio.enqueue_from_pre_spikes(DCN.spike)       # DCN inhibit IO when they spike
 
         # ----- CF→PKJ gating mask for plasticity (which PKJ received a CF this step?) -----
         cf_to_pkj_mask.fill(False)

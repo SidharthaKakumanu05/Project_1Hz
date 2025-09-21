@@ -89,4 +89,17 @@ def build_connectivity(cfg):
         "post_idx": cp.arange(N_DCN, dtype=cp.int32),
     }
 
+    # -----------------------------
+    # DCN → IO (inhibitory feedback)
+    # -----------------------------
+    # Each DCN neuron provides inhibitory feedback to multiple IO neurons
+    # Each IO receives input from ~N_DCN/2 DCN neurons
+    dcn_conn = max(1, N_DCN // 2)  # ensure at least 1 connection
+    dcn_pre  = rng.integers(0, N_DCN, size=dcn_conn * N_CF, dtype=np.int32)
+    dcn_post = np.repeat(np.arange(N_CF, dtype=np.int32), dcn_conn)
+    graph["DCN_to_IO"] = {
+        "pre_idx": cp.asarray(dcn_pre),
+        "post_idx": cp.asarray(dcn_post),
+    }
+
     return graph
