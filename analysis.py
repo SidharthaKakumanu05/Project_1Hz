@@ -164,14 +164,40 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
     n_snapshots, M = weights.shape
     t = np.arange(n_snapshots) * every_steps * dt
 
+    # Calculate weight statistics for better visualization
+    weight_min = weights.min()
+    weight_max = weights.max()
+    weight_mean = weights.mean()
+    weight_std = weights.std()
+    
+    print(f"Weight statistics: min={weight_min:.6f}, max={weight_max:.6f}, mean={weight_mean:.6f}, std={weight_std:.6f}")
+
     # ---- Individual traces ----
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(12, 6))
     n_plot = min(M, max_plot)
+    
+    # Plot individual weight traces
     for i in range(n_plot):
-        ax.plot(t, weights[:, i], alpha=0.5, linewidth=0.5)
-    ax.set_title("PF→PKJ weights (individual)")
+        ax.plot(t, weights[:, i], alpha=0.7, linewidth=1.0, marker='o', markersize=2)
+    
+    # Set y-axis to be centered around 1.0 with appropriate range
+    weight_range = weight_max - weight_min
+    if weight_range > 0:
+        # Center around 1.0 with range that shows the variation
+        center_range = max(0.01, weight_range * 2)  # At least 0.01 range
+        ax.set_ylim(1.0 - center_range/2, 1.0 + center_range/2)
+    else:
+        # If no variation, show a small range around 1.0
+        ax.set_ylim(0.999, 1.001)
+    
+    # Add horizontal line at initial weight (1.0) for reference
+    ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Initial weight (1.0)')
+    
+    ax.set_title(f"PF→PKJ weights (individual traces, n={n_plot})")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Weight")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "weights_individual.png"), dpi=200)
     plt.close(fig)
@@ -187,16 +213,67 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
     mean = np.mean(means, axis=0)
     std = np.mean(stds, axis=0)
 
-    fig, ax = plt.subplots(figsize=(8, 3))
-    ax.plot(t, mean, label="mean", color="black")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(t, mean, label="mean", color="black", linewidth=2)
     ax.fill_between(t, mean - std, mean + std,
                     alpha=0.3, color="gray", label="±std")
-    ax.set_title("PF→PKJ weights (mean ± std)")
+    
+    # Add horizontal line at initial weight for reference
+    ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Initial weight (1.0)')
+    
+    # Set y-axis to be centered around 1.0 with appropriate range
+    mean_range = mean.max() - mean.min()
+    if mean_range > 0:
+        # Center around 1.0 with range that shows the variation
+        center_range = max(0.01, mean_range * 2)  # At least 0.01 range
+        ax.set_ylim(1.0 - center_range/2, 1.0 + center_range/2)
+    else:
+        # If no variation, show a small range around 1.0
+        ax.set_ylim(0.999, 1.001)
+    
+    ax.set_title("PF→PKJ weights (mean ± std across all synapses)")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Weight")
     ax.legend()
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "weights_mean_std.png"), dpi=200)
+    plt.close(fig)
+    
+    # ---- Additional plot: Weight distribution over time ----
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    
+    # Plot weight histogram at different time points
+    time_indices = [0, n_snapshots//4, n_snapshots//2, 3*n_snapshots//4, n_snapshots-1]
+    colors = ['blue', 'green', 'orange', 'red', 'purple']
+    labels = ['t=0', f't={t[n_snapshots//4]:.1f}s', f't={t[n_snapshots//2]:.1f}s', 
+              f't={t[3*n_snapshots//4]:.1f}s', f't={t[-1]:.1f}s']
+    
+    for i, (idx, color, label) in enumerate(zip(time_indices, colors, labels)):
+        ax1.hist(weights[idx, :], bins=50, alpha=0.6, color=color, label=label, density=True)
+    
+    ax1.axvline(x=1.0, color='black', linestyle='--', alpha=0.7, label='Initial weight (1.0)')
+    ax1.set_xlabel("Weight")
+    ax1.set_ylabel("Density")
+    ax1.set_title("Weight distribution at different time points")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot percentage of weights that changed from initial value
+    unchanged_percent = []
+    for i in range(n_snapshots):
+        unchanged = np.sum(weights[i, :] == 1.0)
+        unchanged_percent.append(100 * unchanged / M)
+    
+    ax2.plot(t, unchanged_percent, color='blue', linewidth=2)
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Percentage of weights at 1.0")
+    ax2.set_title("Percentage of synapses with unchanged weights")
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(0, 100)
+    
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, "weights_distribution.png"), dpi=200)
     plt.close(fig)
 
 
@@ -251,7 +328,7 @@ def analyze(npz_path, outdir="analysis_outputs"):
     np_data = np.load(npz_path, allow_pickle=True)
     cfg = get_config()
     dt = cfg["dt"]
-    log_stride = 10  # must match Recorder
+    log_stride = 50  # must match Recorder (updated to match optimization)
     every_steps = cfg["rec_weight_every_steps"]
 
     start = time.time()

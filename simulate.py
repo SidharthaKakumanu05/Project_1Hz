@@ -14,9 +14,9 @@ from plasticity import update_pfpkj_plasticity
 from recorder import Recorder
 
 
-def simulate_current_from_proj(proj, V_post):
+def simulate_current_from_proj(proj, V_post, I_buffer=None):
     """
-    Convert a synapse projection’s pending conductances into currents on postsynaptic cells.
+    Convert a synapse projection's pending conductances into currents on postsynaptic cells.
 
     Steps:
     1) proj.currents_to_post() gives:
@@ -26,10 +26,21 @@ def simulate_current_from_proj(proj, V_post):
     3) Scatter-add those currents to the postsynaptic neurons they target.
     """
     g, post_idx = proj.currents_to_post()
-    I_con = g * (proj.E_rev - V_post[post_idx])  # Ohm’s law in conductance form
-    I = cp.zeros_like(V_post, dtype=cp.float32)
-    cp.add.at(I, post_idx, I_con)                # scatter-accumulate by postsyn neuron index
-    return I
+    if g.size == 0:  # No events this step
+        if I_buffer is not None:
+            I_buffer.fill(0.0)
+            return I_buffer
+        return cp.zeros_like(V_post, dtype=cp.float32)
+    
+    I_con = g * (proj.E_rev - V_post[post_idx])  # Ohm's law in conductance form
+    if I_buffer is not None:
+        I_buffer.fill(0.0)
+        cp.add.at(I_buffer, post_idx, I_con)     # scatter-accumulate by postsyn neuron index
+        return I_buffer
+    else:
+        I = cp.zeros_like(V_post, dtype=cp.float32)
+        cp.add.at(I, post_idx, I_con)            # scatter-accumulate by postsyn neuron index
+        return I
 
 
 def run():
@@ -160,7 +171,7 @@ def run():
         "BC": N_BC,
         "DCN": N_DCN,
     }
-    rec = Recorder(T_steps, pop_sizes, log_stride=10, rec_weight_every=cfg["rec_weight_every_steps"])
+    rec = Recorder(T_steps, pop_sizes, log_stride=50, rec_weight_every=cfg["rec_weight_every_steps"])
     rec.start_timer()
 
     # --- Last-spike time trackers (initialize to -inf so first deltas are large/ignored) ---
@@ -170,6 +181,16 @@ def run():
 
     # Mask of PKJ targets reached by CFs on this step (for LTD gating)
     cf_to_pkj_mask = cp.zeros(N_PKJ, dtype=cp.bool_)
+    
+    # --- Pre-allocated current buffers to avoid repeated allocations ---
+    I_io_buffer = cp.zeros(N_CF, dtype=cp.float32)
+    I_bc_buffer = cp.zeros(N_BC, dtype=cp.float32)
+    
+    # --- Pre-allocated bias current arrays ---
+    I_extio = cp.full(N_CF, cfg["io_bias_current"], dtype=cp.float32)
+    I_ext_dcn = cp.full(N_DCN, cfg["dcn_bias_current"], dtype=cp.float32)
+    I_ext_bc = cp.zeros(N_BC, dtype=cp.float32)
+    I_ext_pkj = cp.zeros(N_PKJ, dtype=cp.float32)
 
     t0 = time.perf_counter()
 
@@ -182,10 +203,9 @@ def run():
         # ----- Inferior Olive (IO) update -----
         dcnio.step_decay()                                 # decay DCN->IO conductances
         I_gap   = apply_ohmic_coupling(IO.V, pairs, cfg["g_gap_IO"])          # gap-junction currents
-        I_dcnio = simulate_current_from_proj(dcnio, IO.V)  # DCN->IO inhibition
-        I_extio = cp.full(IO.V.size, cfg["io_bias_current"], dtype=cp.float32) # tonic bias current
+        I_dcnio = simulate_current_from_proj(dcnio, IO.V, I_io_buffer)  # DCN->IO inhibition
         IO = lif_step(IO, I_syn=I_gap + I_dcnio, I_ext=I_extio, dt=dt, lif_cfg=cfg["lif_IO"])
-        cf_spike = IO.spike.copy()  # CF spikes are IO spikes
+        cf_spike = IO.spike  # CF spikes are IO spikes (no copy needed)
         if cp.any(cf_spike):
             cfpkj.enqueue_from_pre_spikes(cf_spike)  # schedule CF→PKJ events with synaptic delay
 
@@ -206,27 +226,29 @@ def run():
 
         # ----- Basket cells (BC) -----
         pfbc.step_decay()                                  # exponential decay of PF→BC conductances
-        I_bc = simulate_current_from_proj(pfbc, BC.V)      # turn scheduled events into currents on BC
-        BC = lif_step(BC, I_syn=I_bc, I_ext=cp.zeros(N_BC, dtype=cp.float32), dt=dt, lif_cfg=cfg["lif_BC"])
+        I_bc = simulate_current_from_proj(pfbc, BC.V, I_bc_buffer)      # turn scheduled events into currents on BC
+        BC = lif_step(BC, I_syn=I_bc, I_ext=I_ext_bc, dt=dt, lif_cfg=cfg["lif_BC"])
         if cp.any(BC.spike):
             bcpkj.enqueue_from_pre_spikes(BC.spike)        # BC inhibition scheduled onto PKJ
 
         # ----- Purkinje cells (PKJ) -----
         # Decay all incoming synaptic projections before gathering their currents
-        cfpkj.step_decay(); bcpkj.step_decay(); pfpkj.step_decay()
+        cfpkj.step_decay()
+        bcpkj.step_decay()
+        pfpkj.step_decay()
         I_pkj = (
             simulate_current_from_proj(cfpkj, PKJ.V) +
             simulate_current_from_proj(bcpkj, PKJ.V) +
             simulate_current_from_proj(pfpkj, PKJ.V)
         )
-        PKJ = lif_step(PKJ, I_syn=I_pkj, I_ext=cp.zeros(N_PKJ, dtype=cp.float32), dt=dt, lif_cfg=cfg["lif_PKJ"])
+        PKJ = lif_step(PKJ, I_syn=I_pkj, I_ext=I_ext_pkj, dt=dt, lif_cfg=cfg["lif_PKJ"])
 
         # ----- Deep cerebellar nuclei (DCN) -----
         if cp.any(PKJ.spike):
             pkjdcn.enqueue_from_pre_spikes(PKJ.spike)      # PKJ inhibit DCN when they spike
-        pkjdcn.step_decay(); mfdcn.step_decay()
+        pkjdcn.step_decay()
+        mfdcn.step_decay()
         I_dcn = simulate_current_from_proj(pkjdcn, DCN.V) + simulate_current_from_proj(mfdcn, DCN.V)
-        I_ext_dcn = cp.full(N_DCN, cfg["dcn_bias_current"], dtype=cp.float32)  # DCN bias current
         DCN = lif_step(DCN, I_syn=I_dcn, I_ext=I_ext_dcn, dt=dt, lif_cfg=cfg["lif_DCN"])
         
         # DCN -> IO inhibition (feedback loop)
@@ -241,12 +263,14 @@ def run():
             cf_to_pkj_mask[pkj_targets] = True
 
         # ----- PF→PKJ plasticity (uses last spike times + CF gating mask) -----
-        pfpkj.w, last_pf_spike, last_pkj_spike, last_cf_spike = update_pfpkj_plasticity(
-            pfpkj.w, pfpkj.pre_idx, pfpkj.post_idx,
-            pf_spike_pool, PKJ.spike, cf_to_pkj_mask,
-            sim_t, cfg,
-            last_pf_spike, last_pkj_spike, last_cf_spike
-        )
+        # Only run plasticity every few steps to improve performance
+        if step % cfg["plasticity_every_steps"] == 0:
+            pfpkj.w, last_pf_spike, last_pkj_spike, last_cf_spike = update_pfpkj_plasticity(
+                pfpkj.w, pfpkj.pre_idx, pfpkj.post_idx,
+                pf_spike_pool, PKJ.spike, cf_to_pkj_mask,
+                sim_t, cfg,
+                last_pf_spike, last_pkj_spike, last_cf_spike
+            )
 
         # ----- Record spikes and (optionally) weights -----
         rec.log_spikes(step, "IO", IO.spike)

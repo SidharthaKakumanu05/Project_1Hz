@@ -34,15 +34,17 @@ def step_pf_coinflip(pf_state, rate_hz, dt):
     refrac = pf_state["refrac"]       # refractory countdown for each PF
     can_fire = refrac <= 0            # only neurons with 0 refractory can spike
 
-    # Boolean array of spike events
-    spikes = cp.zeros(pf_state["N"], dtype=bool)
-    randu = cp.random.random(pf_state["N"])  # uniform random numbers
-    spikes = cp.logical_and(can_fire, randu < p)
+    # Only generate random numbers for neurons that can fire
+    if cp.any(can_fire):
+        randu = cp.random.random(pf_state["N"])  # uniform random numbers
+        spikes = cp.logical_and(can_fire, randu < p)
+    else:
+        spikes = cp.zeros(pf_state["N"], dtype=bool)
 
     # --- Update refractory state ---
     # neurons that spiked: set refractory timer
     refrac[spikes] = pf_state["refrac_steps"]
-    # neurons that didn’t spike: decrement timer if > 0
+    # neurons that didn't spike: decrement timer if > 0
     refrac[~spikes] = cp.maximum(0, refrac[~spikes] - 1)
 
     pf_state["refrac"] = refrac       # save back updated refractory

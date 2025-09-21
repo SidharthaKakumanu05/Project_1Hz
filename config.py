@@ -87,7 +87,7 @@ def get_config():
     cfg["w_pfpkj_init"] = 1.0   # initial weight
     cfg["w_min"] = 0.2          # lower bound
     cfg["w_max"] = 3.0          # upper bound
-    cfg["w_leak"] = 0.0         # unused here (reserved for weight decay)
+    cfg["w_leak"] = 1e-6        # weight decay rate to prevent upward drift
 
     # -----------------------------
     # IO (Inferior Olive) excitability
@@ -119,6 +119,7 @@ def get_config():
     # -----------------------------
     # Recording frequency
     # -----------------------------
-    cfg["rec_weight_every_steps"] = int(0.01 / cfg["dt"])  # record weights every 10 ms
+    cfg["rec_weight_every_steps"] = int(0.1 / cfg["dt"])  # record weights every 100 ms (reduced frequency)
+    cfg["plasticity_every_steps"] = int(0.01 / cfg["dt"])  # run plasticity every 10 ms
 
     return cfg

@@ -67,7 +67,12 @@ class Recorder:
         if bin_idx >= self.spikes[pop_name].shape[0]:
             return
         # Add to bin: note this adds elementwise across neurons
-        self.spikes[pop_name][bin_idx] += self._to_numpy(spikes)
+        # Convert to numpy only when necessary
+        if hasattr(spikes, "get"):
+            spikes_np = spikes.get().astype(np.uint8)
+        else:
+            spikes_np = np.asarray(spikes, dtype=np.uint8)
+        self.spikes[pop_name][bin_idx] += spikes_np
 
     # -------------------------
     # Weight logging

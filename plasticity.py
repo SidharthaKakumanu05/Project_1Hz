@@ -37,13 +37,12 @@ def update_pfpkj_plasticity(
     ltp_scale = cp.float32(cfg["ltp_scale"])                # How much weight increases for LTP
     w_min     = cp.float32(cfg["w_min"])                    # Lower bound on synaptic weight
     w_max     = cp.float32(cfg["w_max"])                    # Upper bound on synaptic weight
+    w_leak    = cp.float32(cfg["w_leak"])                   # Weight decay rate
 
     # --- Update spike history for this step ---
     if pf_spikes.any():
-        last_pf_spike = last_pf_spike.copy()      # copy to avoid in-place issues
         last_pf_spike[pf_spikes] = t              # record time for all spiking PFs
     if pkj_spikes.any():
-        last_pkj_spike = last_pkj_spike.copy()
         last_pkj_spike[pkj_spikes] = t
     if cf_mask.any():
         cf_idx = cp.where(cf_mask)[0]             # which PKJs got CF this step
@@ -62,7 +61,6 @@ def update_pfpkj_plasticity(
         # 3) PF spike was within the LTD time window
         ltd_mask = posts_cf & (dt_pf > 0) & (dt_pf <= ltd_win)
         if ltd_mask.any():
-            w = w.copy()
             w[ltd_mask] -= ltd_scale   # depression (reduce weight)
 
     # --- LTP rule: PF must precede PKJ spike, *but only if no CF present* ---
@@ -77,9 +75,13 @@ def update_pfpkj_plasticity(
             # 2) within LTP window
             ltp_mask = posts_spike_no_cf & (dt_pf > 0) & (dt_pf <= ltp_win)
             if ltp_mask.any():
-                w = w.copy()
                 w[ltp_mask] += ltp_scale   # potentiation (increase weight)
 
+    # --- Apply weight decay to prevent upward drift (scaled by plasticity frequency) ---
+    # Scale decay by plasticity frequency to maintain same effective rate
+    decay_scale = cfg["plasticity_every_steps"] * cfg["dt"]  # time between plasticity updates
+    w = w * (1.0 - w_leak * decay_scale)
+    
     # --- Clip weights to min/max allowed values ---
     w = cp.clip(w, w_min, w_max)
 

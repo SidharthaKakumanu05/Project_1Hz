@@ -88,7 +88,7 @@ class SynapseProj:
         This acts like a circular buffer that rotates forward each timestep.
         """
         self.buf_ptr = (self.buf_ptr + 1) % self.delay_buf.shape[0]
-        self.delay_buf[self.buf_ptr, :] *= 0.0  # clear this slot for reuse
+        self.delay_buf[self.buf_ptr, :] = 0.0  # clear this slot for reuse (faster than *=)
 
     def currents_to_post(self):
         """

@@ -56,6 +56,7 @@ def lif_step(state, I_syn, I_ext, dt, lif_cfg):
     EL = lif_cfg["EL"]
     Vth = lif_cfg["Vth"]
     Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
 
     # --- Refractory update ---
     # Count down for neurons currently in refractory
@@ -70,11 +71,11 @@ def lif_step(state, I_syn, I_ext, dt, lif_cfg):
     # --- Spike detection ---
     spike = V >= Vth              # any neuron above threshold spikes
     V = cp.where(spike, Vreset, V)  # reset spiking neurons to Vreset
+    # neurons that spiked get a fresh refractory period
+    state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
 
     # --- Update state ---
     state.V = V
     state.spike = spike
-    # neurons that spiked get a fresh refractory period
-    state.refrac_timer = cp.where(spike, lif_cfg["refrac_steps"], state.refrac_timer)
 
     return state
