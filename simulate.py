@@ -1,9 +1,22 @@
+#!/usr/bin/env python3
+"""
+Main simulation engine for the cerebellar microcircuit simulation.
+
+This file contains the core simulation loop that orchestrates the entire cerebellar
+network simulation. It coordinates neuron updates, synaptic transmission, plasticity,
+and data recording to simulate the behavior of a simplified cerebellar microcircuit.
+
+For a freshman undergrad: This is the "brain" of the simulation - it's where everything
+comes together and the actual simulation happens!
+"""
+
 import os
 import time
 import cupy as cp
 from tqdm import tqdm
 from math import log
 
+# Import all the components we need for the simulation
 from config import get_config
 from neurons import NeuronState, lif_step
 from synapses import SynapseProj
@@ -17,13 +30,31 @@ from recorder import Recorder
 def simulate_current_from_proj(proj, V_post, I_buffer=None):
     """
     Convert a synapse projection's pending conductances into currents on postsynaptic cells.
-
+    
+    This function takes the synaptic conductances that are ready to be delivered
+    (from the delay buffer) and converts them into actual currents that affect
+    the postsynaptic neurons. It uses Ohm's law: I = g * (E_rev - V_post).
+    
     Steps:
     1) proj.currents_to_post() gives:
        - g: conductance per arriving event (already aggregated for this step)
        - post_idx: which postsynaptic neuron each conductance goes to
     2) Use conductance-based current: I = g * (E_rev - V_post)
     3) Scatter-add those currents to the postsynaptic neurons they target.
+
+    Parameters
+    ----------
+    proj : SynapseProj
+        The synaptic projection (e.g., PF→PKJ, BC→PKJ)
+    V_post : array
+        Membrane voltages of postsynaptic neurons
+    I_buffer : array, optional
+        Pre-allocated buffer for currents (for efficiency)
+
+    Returns
+    -------
+    I : array
+        Current to be applied to each postsynaptic neuron
     """
     g, post_idx = proj.currents_to_post()
     if g.size == 0:  # No events this step
@@ -44,54 +75,80 @@ def simulate_current_from_proj(proj, V_post, I_buffer=None):
 
 
 def run():
+    """
+    Main simulation function that runs the complete cerebellar microcircuit simulation.
+    
+    This function orchestrates the entire simulation process:
+    1. Load configuration and set up network structure
+    2. Initialize all neuron populations and synaptic connections
+    3. Set up input generators and recording systems
+    4. Run the main simulation loop
+    5. Save results and return simulation information
+    
+    Returns
+    -------
+    dict
+        Dictionary containing simulation results and output file path
+    """
     # --- Load config and basic sizes ---
+    # Get all simulation parameters from the centralized configuration
     cfg = get_config()
-    dt = cfg["dt"]
-    T_steps = cfg["T_steps"]
-    N_BC, N_PKJ, N_CF, N_DCN = cfg["N_BC"], cfg["N_PKJ"], cfg["N_CF"], cfg["N_DCN"]
+    dt = cfg["dt"]                    # Time step size (seconds)
+    T_steps = cfg["T_steps"]          # Total number of simulation steps
+    N_BC, N_PKJ, N_CF, N_DCN = cfg["N_BC"], cfg["N_PKJ"], cfg["N_CF"], cfg["N_DCN"]  # Population sizes
 
     # --- Build connectivity graph (indices, weights, delays, etc.) ---
+    # This creates the "wiring diagram" of which neurons connect to which other neurons
     graph = build_connectivity(cfg)
 
     # --- Quick IO rheobase / predicted-rate sanity check (first few IOs) ---
+    # This calculates the theoretical firing rate of IO neurons to verify our parameters
+    # are reasonable before running the full simulation
+    print("=== IO Neuron Parameter Check ===")
     for i in range(min(3, N_CF)):
-        C = cfg["lif_IO"]["C"]
-        gL = cfg["lif_IO"]["gL"]
-        Vth = cfg["lif_IO"]["Vth"]
-        EL = cfg["lif_IO"]["EL"]
-        Vreset = cfg["lif_IO"]["Vreset"]
-        I_bias = cfg["io_bias_current"]
+        C = cfg["lif_IO"]["C"]        # Membrane capacitance
+        gL = cfg["lif_IO"]["gL"]      # Leak conductance
+        Vth = cfg["lif_IO"]["Vth"]    # Spike threshold
+        EL = cfg["lif_IO"]["EL"]      # Resting potential
+        Vreset = cfg["lif_IO"]["Vreset"]  # Reset potential
+        I_bias = cfg["io_bias_current"]    # Bias current
 
-        tau = C / gL
-        I_rheo = gL * (Vth - EL)  # rheobase current for LIF
-        # T is inter-spike interval for a biased LIF under DC input (closed-form)
+        tau = C / gL                  # Membrane time constant
+        I_rheo = gL * (Vth - EL)      # Rheobase current (minimum to cause spiking)
+        # T is inter-spike interval for a biased LIF under DC input (closed-form solution)
         T = tau * log((I_bias - gL * (Vreset - EL)) / (I_bias - I_rheo))
         print(f"IO[{i}] tau={tau*1e3:.1f} ms, I_rheo={I_rheo*1e12:.1f} pA, "
               f"I_bias={I_bias*1e12:.1f} pA, predicted rate={1/T:.2f} Hz")
+    print("=================================\n")
 
     # --- Create neuron populations (state vectors: V, refractory, spike flags, etc.) ---
-    IO  = NeuronState(N_CF,  cfg["lif_IO"])
-    PKJ = NeuronState(N_PKJ, cfg["lif_PKJ"])
-    BC  = NeuronState(N_BC,  cfg["lif_BC"])
-    DCN = NeuronState(N_DCN, cfg["lif_DCN"])
+    # Each population is a NeuronState object that holds the current state of all neurons
+    # in that population (voltages, refractory periods, spike flags)
+    IO  = NeuronState(N_CF,  cfg["lif_IO"])   # Inferior Olive neurons (teaching signals)
+    PKJ = NeuronState(N_PKJ, cfg["lif_PKJ"])  # Purkinje cells (main computational units)
+    BC  = NeuronState(N_BC,  cfg["lif_BC"])   # Basket cells (inhibitory interneurons)
+    DCN = NeuronState(N_DCN, cfg["lif_DCN"])  # Deep Cerebellar Nuclei (output neurons)
 
     # --- Synapse projections (index lists + dynamics params) ---
-    # Climbing fiber -> Purkinje
+    # Each SynapseProj object manages one type of connection between populations
+    # It handles synaptic delays, weights, and conductance dynamics
+    
+    # Climbing fiber -> Purkinje (teaching signals)
     cfpkj = SynapseProj(
         graph["CF_to_PKJ"]["pre_idx"], graph["CF_to_PKJ"]["post_idx"],
-        w_init=cp.full(N_CF, 8e-9, dtype=cp.float32),            # CF initial conductance
-        E_rev=cfg["syn_CF_PKJ"]["E_rev"],
-        tau=cfg["syn_CF_PKJ"]["tau"],
-        delay_steps=cfg["syn_CF_PKJ"]["delay_steps"]
+        w_init=cp.full(N_CF, 8e-9, dtype=cp.float32),            # CF initial conductance (strong)
+        E_rev=cfg["syn_CF_PKJ"]["E_rev"],                        # Excitatory (E_rev = 0)
+        tau=cfg["syn_CF_PKJ"]["tau"],                            # Fast decay
+        delay_steps=cfg["syn_CF_PKJ"]["delay_steps"]             # Synaptic delay
     )
 
-    # Parallel fiber -> Purkinje (plastic synapse)
+    # Parallel fiber -> Purkinje (plastic synapse - this is where learning happens!)
     pfpkj = SynapseProj(
         graph["PF_to_PKJ"]["pre_idx"], graph["PF_to_PKJ"]["post_idx"],
         w_init=cp.full(graph["PF_to_PKJ"]["pre_idx"].size, cfg["w_pfpkj_init"], dtype=cp.float32),
-        E_rev=cfg["syn_PF_PKJ"]["E_rev"],
-        tau=cfg["syn_PF_PKJ"]["tau"],
-        delay_steps=cfg["syn_PF_PKJ"]["delay_steps"]
+        E_rev=cfg["syn_PF_PKJ"]["E_rev"],                        # Excitatory (E_rev = 0)
+        tau=cfg["syn_PF_PKJ"]["tau"],                            # Medium decay
+        delay_steps=cfg["syn_PF_PKJ"]["delay_steps"]             # Synaptic delay
     )
     # Pre-drawn PF event scaling (per-connection conductance samples)
     pf_con_g = draw_pf_conductances(pfpkj.M, cfg["pf_g_mean"], cfg["pf_g_std"])
