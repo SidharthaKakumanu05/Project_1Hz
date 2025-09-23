@@ -100,24 +100,4 @@ All parameters are centralized in `config.py`. Key settings include:
 - Synaptic properties (delays, decay constants, weights)
 - Plasticity rules (LTP/LTD windows and scales)
 
-## 🔬 For Freshman Undergrads
-
-This codebase is designed to be educational and well-commented. Key concepts:
-
-- **Neurons**: Simplified models that integrate inputs and fire spikes
-- **Synapses**: Connections between neurons with delays and weights
-- **Plasticity**: Learning by changing synaptic strengths
-- **Emergent Behavior**: The 1 Hz IO firing rate emerges from network dynamics
-- **GPU Acceleration**: Uses CuPy for fast parallel computation
-
-Each file has extensive comments explaining both the biological relevance and computational implementation.
-
-## 📊 Expected Output
-
-The simulation should produce:
-- IO neurons firing at ~1 Hz (emergent property)
-- Stable network dynamics with realistic firing rates
-- Learning through PF→PKJ weight changes
-- Detailed analysis plots showing network behavior
-
 <img width="2579" height="1771" alt="SIM_DIAGRAM" src="https://github.com/user-attachments/assets/8069243c-2711-409e-a006-13160d92dfe2" />
