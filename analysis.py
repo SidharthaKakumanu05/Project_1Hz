@@ -447,13 +447,20 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
     fig, ax = plt.subplots(figsize=(fig_width, 8))
     n_plot = min(M, max_plot)
     
+    # Randomly sample synapses to get a representative sample
+    if M > max_plot:
+        np.random.seed(42)  # For reproducible results
+        selected_indices = np.random.choice(M, size=max_plot, replace=False)
+    else:
+        selected_indices = np.arange(M)
+    
     # Use different colors for better distinction
     colors = plt.cm.tab10(np.linspace(0, 1, min(10, n_plot)))
     
     # Plot individual weight traces with better visibility
-    for i in range(n_plot):
+    for i, idx in enumerate(selected_indices):
         color = colors[i % len(colors)]
-        ax.plot(t, weights[:, i], alpha=0.8, linewidth=2.5, 
+        ax.plot(t, weights[:, idx], alpha=0.8, linewidth=2.5, 
                 color=color, marker='o', markersize=3, markevery=max(1, len(t)//50))
     
     # Set y-axis to show full range with some padding
@@ -480,15 +487,23 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
 
     # ---- Mean ± std envelope (optimized) ----
     # Use vectorized operations for better performance
-    if M > 10000:  # For large datasets, use chunked processing
+    if M > 10000:  # For large datasets, use chunked processing to avoid memory issues
         batch = 5000  # Larger batches for better performance
-        means, stds = [], []
+        # Compute weighted mean and std across all synapses
+        sum_weights = np.zeros(n_snapshots)
+        sum_squared_weights = np.zeros(n_snapshots)
+        total_count = 0
+        
         for i in range(0, M, batch):
             chunk = weights[:, i:i + batch]
-            means.append(chunk.mean(axis=1))
-            stds.append(chunk.std(axis=1))
-        mean = np.mean(means, axis=0)
-        std = np.mean(stds, axis=0)
+            chunk_size = chunk.shape[1]
+            sum_weights += chunk.sum(axis=1)
+            sum_squared_weights += (chunk ** 2).sum(axis=1)
+            total_count += chunk_size
+        
+        mean = sum_weights / total_count
+        # Corrected standard deviation calculation
+        std = np.sqrt((sum_squared_weights / total_count) - (mean ** 2))
     else:  # For smaller datasets, use direct computation
         mean = weights.mean(axis=1)
         std = weights.std(axis=1)

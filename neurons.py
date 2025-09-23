@@ -49,6 +49,9 @@ class NeuronState:
         # Boolean array: did each neuron spike this step?
         # This tells us which neurons fired action potentials in the current time step
         self.spike = cp.zeros(N, dtype=bool)
+        
+        # Dynamic thresholds (CbmSim style) - initialized to static threshold
+        self.thresh = cp.full(N, lif_cfg["Vth"], dtype=cp.float32)
 
     def reset(self, lif_cfg):
         """
@@ -59,75 +62,201 @@ class NeuronState:
         self.V.fill(lif_cfg["EL"])          # Reset voltage to resting potential
         self.refrac_timer.fill(0)           # Clear all refractory periods
         self.spike.fill(False)              # Clear all spike flags
+        self.thresh.fill(lif_cfg["Vth"])    # Reset thresholds to static value
 
 
 def lif_step(state, I_syn, I_ext, dt, lif_cfg):
     """
-    Advance the LIF model one timestep.
+    Generic LIF neuron step function for non-CbmSim neurons.
     
-    This is the core function that simulates how neurons behave over time.
-    It implements the Leaky Integrate-and-Fire model, which is based on:
-    1. A neuron's membrane voltage changes based on incoming currents
-    2. When voltage reaches threshold, the neuron "fires" (spikes)
-    3. After firing, the neuron can't fire again for a short time (refractory period)
-    
-    The math: dV/dt = (leak current + synaptic currents + external current) / capacitance
+    This is a simplified LIF model for neurons that don't need CbmSim's exact dynamics.
+    It implements the basic leaky integrate-and-fire equations.
     
     Parameters
     ----------
     state : NeuronState
-        The current state of all neurons in this population (voltages, refractory timers, etc.)
+        Current neuron state (V, refrac_timer, spike)
     I_syn : array
-        Synaptic input current from other neurons (positive = excitatory, negative = inhibitory)
+        Synaptic current input
     I_ext : array
-        External current (bias current, injected current, etc.)
+        External current input (bias, etc.)
     dt : float
-        Timestep length in seconds (how much time this step represents)
+        Time step size
     lif_cfg : dict
-        Neuron parameters from config.py (capacitance, conductance, thresholds, etc.)
-
+        LIF neuron parameters (gL, EL, Vth, Vreset, refrac_steps)
+    
     Returns
     -------
     state : NeuronState
-        Updated state after one timestep - voltages, spike flags, refractory timers all updated
+        Updated neuron state
     """
-    # Extract parameters for easier reading
-    V = state.V                                    # Current membrane voltages
-    C = lif_cfg["C"]                              # Membrane capacitance (how much charge it can hold)
-    gL = lif_cfg["gL"]                            # Leak conductance (how fast voltage leaks away)
-    EL = lif_cfg["EL"]                            # Leak reversal potential (resting voltage)
-    Vth = lif_cfg["Vth"]                          # Spike threshold voltage
-    Vreset = lif_cfg["Vreset"]                    # Voltage after a spike
-    refrac_steps = lif_cfg["refrac_steps"]        # How long the refractory period lasts
-
-    # --- Refractory update ---
-    # Count down for neurons currently in refractory period
-    # If a neuron just spiked, it can't spike again for a few time steps
+    V = state.V
+    gL = lif_cfg["gL"]
+    EL = lif_cfg["EL"]
+    Vth = lif_cfg["Vth"]
+    Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
+    
+    # Update refractory timer
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
-
-    # --- Voltage update for active neurons only ---
-    # Only neurons that are NOT in refractory period can have their voltage change
     active = state.refrac_timer == 0
     
-    # Calculate voltage change using the LIF equation:
-    # dV = (leak current + synaptic inputs + external inputs) / capacitance * dt
-    # Leak current pulls voltage back toward EL: -(V - EL) * gL
-    dV = (-(V - EL) * gL + I_syn + I_ext) / C * dt
-    V = V + dV * active   # Only active neurons get voltage updates
-
-    # --- Spike detection ---
-    # Any neuron whose voltage exceeds the threshold will spike
+    # LIF equation: dV/dt = (gL * (EL - V) + I_syn + I_ext) / C
+    # For simplicity, assume C = 1 (normalized)
+    V += (gL * (EL - V) + I_syn + I_ext) * dt * active
+    
+    # Spike detection
     spike = V >= Vth
-    
-    # Reset the voltage of spiking neurons back to Vreset
     V = cp.where(spike, Vreset, V)
-    
-    # Neurons that just spiked enter a refractory period
     state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
-
-    # --- Update state ---
-    # Save the updated voltages and spike information back to the state object
+    
     state.V = V
     state.spike = spike
+    return state
 
+
+def cbmsim_io_step(state, gNCSum, vCoupleIO, gNoise, dt, lif_cfg):
+    """
+    CbmSim exact IO neuron update: vIO += gLeakIO * (eLeakIO - vIO) + gNCSum * (eNCtoIO - vIO) + vCoupleIO + gNoise
+    No error drive - removed for long-term stability testing
+    """
+    V = state.V
+    gL = lif_cfg["gL"]
+    EL = lif_cfg["EL"]
+    Vth = lif_cfg["Vth"]
+    Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
+    thresh_decay = lif_cfg["thresh_decay"]
+    thresh_rest = lif_cfg["thresh_rest"]
+    eNCtoIO = lif_cfg["eNCtoIO"]
+
+    # Update dynamic threshold (CbmSim: threshIO[i] += threshDecIO * (threshRestIO - threshIO[i]))
+    state.thresh += thresh_decay * (thresh_rest - state.thresh)
+
+    # Refractory update
+    state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
+    active = state.refrac_timer == 0
+
+    # CbmSim exact IO equation - NO capacitance, NO dt multiplication!
+    V += (gL * (EL - V) + gNCSum * (eNCtoIO - V) + vCoupleIO + gNoise[0]) * active
+
+    # Spike detection
+    spike = V >= state.thresh
+    V = cp.where(spike, Vreset, V)
+    state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
+    # CbmSim threshold reset: set to max if we spiked, otherwise keep same
+    thresh_max = lif_cfg["thresh_max"]
+    state.thresh = cp.where(spike, thresh_max, state.thresh)
+
+    state.V = V
+    state.spike = spike
+    return state
+
+def cbmsim_pc_step(state, gPFPC, gBCPC, gSCPC, dt, lif_cfg):
+    """
+    CbmSim exact PC neuron update: vPC += gLeakPC * (eLeakPC - vPC) - gPFPC * vPC + gBCPC * (eBCtoPC - vPC) + gSCPC * (eSCtoPC - vPC)
+    """
+    V = state.V
+    gL = lif_cfg["gL"]
+    EL = lif_cfg["EL"]
+    Vth = lif_cfg["Vth"]
+    Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
+    thresh_decay = lif_cfg["thresh_decay"]
+    thresh_rest = lif_cfg["thresh_rest"]
+    eBCtoPC = lif_cfg["eBCtoPC"]
+    eSCtoPC = lif_cfg["eSCtoPC"]
+
+    # Update dynamic threshold
+    state.thresh += thresh_decay * (thresh_rest - state.thresh)
+
+    # Refractory update
+    state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
+    active = state.refrac_timer == 0
+
+    # FIXED PC equation - use proper synaptic currents instead of conductance*voltage
+    V += (gL * (EL - V) + gPFPC + gBCPC + gSCPC) * active
+
+    # Spike detection
+    spike = V >= state.thresh
+    V = cp.where(spike, Vreset, V)
+    state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
+    # CbmSim threshold reset: set to max if we spiked, otherwise keep same
+    thresh_max = lif_cfg["thresh_max"]
+    state.thresh = cp.where(spike, thresh_max, state.thresh)
+
+    state.V = V
+    state.spike = spike
+    return state
+
+def cbmsim_bc_step(state, gPFBC, gPCBC, dt, lif_cfg):
+    """
+    CbmSim exact BC neuron update: vBC += gLeakBC * (eLeakBC - vBC) - gPFBC * vBC + gPCBC * (ePCtoBC - vBC)
+    """
+    V = state.V
+    gL = lif_cfg["gL"]
+    EL = lif_cfg["EL"]
+    Vth = lif_cfg["Vth"]
+    Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
+    thresh_decay = lif_cfg["thresh_decay"]
+    thresh_rest = lif_cfg["thresh_rest"]
+    ePCtoBC = lif_cfg["ePCtoBC"]
+
+    # Update dynamic threshold
+    state.thresh += thresh_decay * (thresh_rest - state.thresh)
+
+    # Refractory update
+    state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
+    active = state.refrac_timer == 0
+
+    # FIXED BC equation - use proper synaptic currents instead of conductance*voltage
+    V += (gL * (EL - V) + gPFBC + gPCBC) * active
+
+    # Spike detection
+    spike = V >= state.thresh
+    V = cp.where(spike, Vreset, V)
+    state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
+    # CbmSim threshold reset: set to max if we spiked, otherwise keep same
+    thresh_max = lif_cfg["thresh_max"]
+    state.thresh = cp.where(spike, thresh_max, state.thresh)
+
+    state.V = V
+    state.spike = spike
+    return state
+
+def cbmsim_nc_step(state, gMFNMDASum, gMFAMPASum, gPCNCSum, dt, lif_cfg):
+    """
+    CbmSim exact NC neuron update: vNC += gLeakNC * (eLeakNC - vNC) - (gMFNMDASum + gMFAMPASum) * vNC + gPCNCSum * (ePCtoNC - vNC)
+    """
+    V = state.V
+    gL = lif_cfg["gL"]
+    EL = lif_cfg["EL"]
+    Vth = lif_cfg["Vth"]
+    Vreset = lif_cfg["Vreset"]
+    refrac_steps = lif_cfg["refrac_steps"]
+    thresh_decay = lif_cfg["thresh_decay"]
+    thresh_rest = lif_cfg["thresh_rest"]
+    ePCtoNC = lif_cfg["ePCtoNC"]
+
+    # Update dynamic threshold
+    state.thresh += thresh_decay * (thresh_rest - state.thresh)
+
+    # Refractory update
+    state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
+    active = state.refrac_timer == 0
+
+    # FIXED NC equation - use proper synaptic currents instead of conductance*voltage
+    V += (gL * (EL - V) + gMFNMDASum + gMFAMPASum + gPCNCSum) * active
+
+    # Spike detection
+    spike = V >= state.thresh
+    V = cp.where(spike, Vreset, V)
+    state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
+    # CbmSim threshold reset: set to max if we spiked, otherwise keep same
+    thresh_max = lif_cfg["thresh_max"]
+    state.thresh = cp.where(spike, thresh_max, state.thresh)
+
+    state.V = V
+    state.spike = spike
     return state

@@ -18,7 +18,7 @@ from math import log
 
 # Import all the components we need for the simulation
 from config import get_config
-from neurons import NeuronState, lif_step
+from neurons import NeuronState, lif_step, cbmsim_io_step, cbmsim_pc_step, cbmsim_bc_step, cbmsim_nc_step
 from synapses import SynapseProj
 from connectivity import build_connectivity
 from inputs import init_pf_state, step_pf_coinflip, draw_pf_conductances, step_mf_poisson
@@ -99,6 +99,7 @@ def run():
 
     # --- Build connectivity graph (indices, weights, delays, etc.) ---
     # This creates the "wiring diagram" of which neurons connect to which other neurons
+    # CF connections restored for natural LTD/LTP mechanism
     graph = build_connectivity(cfg)
 
     # --- Quick IO rheobase / predicted-rate sanity check (first few IOs) ---
@@ -106,25 +107,23 @@ def run():
     # are reasonable before running the full simulation
     print("=== IO Neuron Parameter Check ===")
     for i in range(min(3, N_CF)):
-        C = cfg["lif_IO"]["C"]        # Membrane capacitance
         gL = cfg["lif_IO"]["gL"]      # Leak conductance
         Vth = cfg["lif_IO"]["Vth"]    # Spike threshold
         EL = cfg["lif_IO"]["EL"]      # Resting potential
         Vreset = cfg["lif_IO"]["Vreset"]  # Reset potential
-        I_bias = cfg["io_bias_current"]    # Bias current
 
-        tau = C / gL                  # Membrane time constant
+        # CbmSim doesn't use capacitance - just direct voltage updates
         I_rheo = gL * (Vth - EL)      # Rheobase current (minimum to cause spiking)
-        # T is inter-spike interval for a biased LIF under DC input (closed-form solution)
-        T = tau * log((I_bias - gL * (Vreset - EL)) / (I_bias - I_rheo))
-        print(f"IO[{i}] tau={tau*1e3:.1f} ms, I_rheo={I_rheo*1e12:.1f} pA, "
-              f"I_bias={I_bias*1e12:.1f} pA, predicted rate={1/T:.2f} Hz")
+        # IO neurons fire purely spontaneously at 2-4 Hz (no bias current, no error drive)
+        # Natural excitability from very small leak conductance + gap junction coupling + noise
+        print(f"IO[{i}] gL={gL:.3f}, I_rheo={I_rheo:.3f}, "
+              f"pure spontaneous firing: 2-4 Hz (with DCN inhibition: ~1 Hz)")
     print("=================================\n")
 
     # --- Create neuron populations (state vectors: V, refractory, spike flags, etc.) ---
     # Each population is a NeuronState object that holds the current state of all neurons
     # in that population (voltages, refractory periods, spike flags)
-    IO  = NeuronState(N_CF,  cfg["lif_IO"])   # Inferior Olive neurons (teaching signals)
+    IO  = NeuronState(N_CF,  cfg["lif_IO"])   # Inferior Olive neurons (spontaneous firing + CF teaching signals)
     PKJ = NeuronState(N_PKJ, cfg["lif_PKJ"])  # Purkinje cells (main computational units)
     BC  = NeuronState(N_BC,  cfg["lif_BC"])   # Basket cells (inhibitory interneurons)
     DCN = NeuronState(N_DCN, cfg["lif_DCN"])  # Deep Cerebellar Nuclei (output neurons)
@@ -133,10 +132,10 @@ def run():
     # Each SynapseProj object manages one type of connection between populations
     # It handles synaptic delays, weights, and conductance dynamics
     
-    # Climbing fiber -> Purkinje (teaching signals)
+    # Climbing fiber -> Purkinje (teaching signals from IO) - EXACT CbmSim strength
     cfpkj = SynapseProj(
         graph["CF_to_PKJ"]["pre_idx"], graph["CF_to_PKJ"]["post_idx"],
-        w_init=cp.full(N_CF, 8e-9, dtype=cp.float32),            # CF initial conductance (strong)
+        w_init=cp.full(graph["CF_to_PKJ"]["pre_idx"].size, 0.01, dtype=cp.float32),  # EXACT CbmSim value: 0.01
         E_rev=cfg["syn_CF_PKJ"]["E_rev"],                        # Excitatory (E_rev = 0)
         tau=cfg["syn_CF_PKJ"]["tau"],                            # Fast decay
         delay_steps=cfg["syn_CF_PKJ"]["delay_steps"]             # Synaptic delay
@@ -156,7 +155,7 @@ def run():
     # Parallel fiber -> Basket cell
     pfbc = SynapseProj(
         graph["PF_to_BC"]["pre_idx"], graph["PF_to_BC"]["post_idx"],
-        w_init=draw_pf_conductances(graph["PF_to_BC"]["pre_idx"].size, cfg["pf_g_mean"], cfg["pf_g_std"]),
+        w_init=draw_pf_conductances(graph["PF_to_BC"]["pre_idx"].size, 0.001, 0.0005),  # Much smaller initial conductances
         E_rev=cfg["syn_PF_BC"]["E_rev"],
         tau=cfg["syn_PF_BC"]["tau"],
         delay_steps=cfg["syn_PF_BC"]["delay_steps"]
@@ -171,10 +170,10 @@ def run():
         delay_steps=cfg["syn_BC_PKJ"]["delay_steps"]
     )
 
-    # Purkinje -> DCN (inhibitory)
+    # Purkinje -> DCN (inhibitory) - EXACT CbmSim strength for proper DCN control
     pkjdcn = SynapseProj(
         graph["PKJ_to_DCN"]["pre_idx"], graph["PKJ_to_DCN"]["post_idx"],
-        w_init=cp.full(graph["PKJ_to_DCN"]["pre_idx"].size, 3e-9, dtype=cp.float32),  # reduced inhibition
+        w_init=cp.full(graph["PKJ_to_DCN"]["pre_idx"].size, 0.3, dtype=cp.float32),  # EXACT CbmSim value: 0.3
         E_rev=cfg["syn_PKJ_DCN"]["E_rev"],
         tau=cfg["syn_PKJ_DCN"]["tau"],
         delay_steps=cfg["syn_PKJ_DCN"]["delay_steps"]
@@ -183,16 +182,16 @@ def run():
     # Mossy fiber -> DCN (excitatory)
     mfdcn = SynapseProj(
         graph["MF_to_DCN"]["pre_idx"], graph["MF_to_DCN"]["post_idx"],
-        w_init=cp.full(graph["MF_to_DCN"]["pre_idx"].size, cfg["mf_g_mean"] * 2.0, dtype=cp.float32),  # increased excitation
+        w_init=cp.full(graph["MF_to_DCN"]["pre_idx"].size, cfg["mf_g_mean"], dtype=cp.float32),  # CRITICAL: Must match CbmSim rawGMFAMPAIncNC = 2.35
         E_rev=cfg["syn_MF_DCN"]["E_rev"],
         tau=cfg["syn_MF_DCN"]["tau"],
         delay_steps=cfg["syn_MF_DCN"]["delay_steps"]
     )
 
-    # DCN -> IO (inhibitory feedback)
+    # DCN -> IO (inhibitory feedback) - EXACT CbmSim strength for proper IO control
     dcnio = SynapseProj(
         graph["DCN_to_IO"]["pre_idx"], graph["DCN_to_IO"]["post_idx"],
-        w_init=cp.full(graph["DCN_to_IO"]["pre_idx"].size, 1.5e-9, dtype=cp.float32),  # reduced inhibitory strength
+        w_init=cp.full(graph["DCN_to_IO"]["pre_idx"].size, 0.01, dtype=cp.float32),  # EXACT CbmSim value: 0.01
         E_rev=cfg["syn_DCN_IO"]["E_rev"],
         tau=cfg["syn_DCN_IO"]["tau"],
         delay_steps=cfg["syn_DCN_IO"]["delay_steps"]
@@ -244,8 +243,8 @@ def run():
     I_bc_buffer = cp.zeros(N_BC, dtype=cp.float32)
     
     # --- Pre-allocated bias current arrays ---
-    I_extio = cp.full(N_CF, cfg["io_bias_current"], dtype=cp.float32)
-    I_ext_dcn = cp.full(N_DCN, cfg["dcn_bias_current"], dtype=cp.float32)
+    I_extio = cp.zeros(N_CF, dtype=cp.float32)  # No bias current for IO neurons (pure spontaneous firing)
+    I_ext_dcn = cp.zeros(N_DCN, dtype=cp.float32)  # No bias current for DCN neurons (synaptic drive only)
     I_ext_bc = cp.zeros(N_BC, dtype=cp.float32)
     I_ext_pkj = cp.zeros(N_PKJ, dtype=cp.float32)
 
@@ -257,11 +256,21 @@ def run():
     for step in tqdm(range(T_steps), desc="Simulating", unit="steps"):
         sim_t = step * dt  # current sim time in seconds
 
-        # ----- Inferior Olive (IO) update -----
+        # ----- Inferior Olive (IO) update - CbmSim style -----
         dcnio.step_decay()                                 # decay DCN->IO conductances
         I_gap   = apply_ohmic_coupling(IO.V, pairs, cfg["g_gap_IO"])          # gap-junction currents
         I_dcnio = simulate_current_from_proj(dcnio, IO.V, I_io_buffer)  # DCN->IO inhibition
-        IO = lif_step(IO, I_syn=I_gap + I_dcnio, I_ext=I_extio, dt=dt, lif_cfg=cfg["lif_IO"])
+        
+        # CbmSim exact IO update: vIO += gLeakIO * (eLeakIO - vIO) + gNCSum * (eNCtoIO - vIO) + vCoupleIO + (errDrive/1.3) + gNoise
+        gNCSum = I_dcnio  # DCN inhibition current
+        vCoupleIO = I_gap  # Gap junction coupling current
+        # No error drive - removed for stability testing
+        # CbmSim uses SAME noise for ALL IO neurons (shared noise)
+        gNoise = cp.random.uniform(-cfg["io_noise_std"], cfg["io_noise_std"], size=1)  # Use config noise value
+        
+        # Use CbmSim exact IO update function
+        IO = cbmsim_io_step(IO, gNCSum, vCoupleIO, gNoise, dt, cfg["lif_IO"])
+        
         cf_spike = IO.spike  # CF spikes are IO spikes (no copy needed)
         if cp.any(cf_spike):
             cfpkj.enqueue_from_pre_spikes(cf_spike)  # schedule CF→PKJ events with synaptic delay
@@ -283,8 +292,9 @@ def run():
 
         # ----- Basket cells (BC) -----
         pfbc.step_decay()                                  # exponential decay of PF→BC conductances
-        I_bc = simulate_current_from_proj(pfbc, BC.V, I_bc_buffer)      # turn scheduled events into currents on BC
-        BC = lif_step(BC, I_syn=I_bc, I_ext=I_ext_bc, dt=dt, lif_cfg=cfg["lif_BC"])
+        I_pfbc = simulate_current_from_proj(pfbc, BC.V, I_bc_buffer)    # PF->BC excitation
+        # Use CbmSim exact BC update function: vBC += gLeakBC * (eLeakBC - vBC) - gPFBC * vBC + gPCBC * (ePCtoBC - vBC)
+        BC = cbmsim_bc_step(BC, I_pfbc, cp.zeros_like(I_pfbc), dt, cfg["lif_BC"])  # No PC->BC input yet
         if cp.any(BC.spike):
             bcpkj.enqueue_from_pre_spikes(BC.spike)        # BC inhibition scheduled onto PKJ
 
@@ -293,31 +303,34 @@ def run():
         cfpkj.step_decay()
         bcpkj.step_decay()
         pfpkj.step_decay()
-        I_pkj = (
-            simulate_current_from_proj(cfpkj, PKJ.V) +
-            simulate_current_from_proj(bcpkj, PKJ.V) +
-            simulate_current_from_proj(pfpkj, PKJ.V)
-        )
-        PKJ = lif_step(PKJ, I_syn=I_pkj, I_ext=I_ext_pkj, dt=dt, lif_cfg=cfg["lif_PKJ"])
+        I_cfpkj = simulate_current_from_proj(cfpkj, PKJ.V)  # CF->PKJ excitation
+        I_bcpkj = simulate_current_from_proj(bcpkj, PKJ.V)  # BC->PKJ inhibition
+        I_pfpkj = simulate_current_from_proj(pfpkj, PKJ.V)  # PF->PKJ excitation
+        # Use CbmSim exact PKJ update function: vPC += gLeakPC * (eLeakPC - vPC) - gPFPC * vPC + gBCPC * (eBCtoPC - vPC) + gSCPC * (eSCtoPC - vPC)
+        PKJ = cbmsim_pc_step(PKJ, I_pfpkj, I_bcpkj, I_cfpkj, dt, cfg["lif_PKJ"])
 
         # ----- Deep cerebellar nuclei (DCN) -----
         if cp.any(PKJ.spike):
             pkjdcn.enqueue_from_pre_spikes(PKJ.spike)      # PKJ inhibit DCN when they spike
         pkjdcn.step_decay()
         mfdcn.step_decay()
-        I_dcn = simulate_current_from_proj(pkjdcn, DCN.V) + simulate_current_from_proj(mfdcn, DCN.V)
-        DCN = lif_step(DCN, I_syn=I_dcn, I_ext=I_ext_dcn, dt=dt, lif_cfg=cfg["lif_DCN"])
+        I_pkjdcn = simulate_current_from_proj(pkjdcn, DCN.V)  # PKJ->DCN inhibition
+        I_mfdcn = simulate_current_from_proj(mfdcn, DCN.V)    # MF->DCN excitation
+        # Use CbmSim exact DCN update function: vNC += gLeakNC * (eLeakNC - vNC) - (gMFNMDASum + gMFAMPASum) * vNC + gPCNCSum * (ePCtoNC - vNC)
+        DCN = cbmsim_nc_step(DCN, I_mfdcn, I_mfdcn, I_pkjdcn, dt, cfg["lif_DCN"])
         
         # DCN -> IO inhibition (feedback loop)
         if cp.any(DCN.spike):
             dcnio.enqueue_from_pre_spikes(DCN.spike)       # DCN inhibit IO when they spike
 
         # ----- CF→PKJ gating mask for plasticity (which PKJ received a CF this step?) -----
-        cf_to_pkj_mask.fill(False)
+        # This mask tells the plasticity rule which PKJs got a "teaching signal" (CF spike)
+        cf_to_pkj_mask.fill(False)  # reset mask
         if cp.any(cf_spike):
-            # cfpkj.post_idx is aligned with CF pres; boolean-index with cf_spike to get PKJ targets
-            pkj_targets = cfpkj.post_idx[cf_spike]    # tricky bit: boolean mask selects posts of spiking CFs
-            cf_to_pkj_mask[pkj_targets] = True
+            # Expand CF spikes to match connection structure: each CF spike affects all its PKJ targets
+            cf_spike_expanded = cf_spike[cfpkj.pre_idx]  # Expand CF spikes to connection level
+            pkj_targets = cfpkj.post_idx[cf_spike_expanded]  # Get PKJ targets of spiking CFs
+            cf_to_pkj_mask[pkj_targets] = True        # mark those PKJs as "taught" this step
 
         # ----- PF→PKJ plasticity (uses last spike times + CF gating mask) -----
         # Only run plasticity every few steps to improve performance

@@ -76,13 +76,26 @@ def build_connectivity(cfg):
     # CF → PKJ (climbing fibers)
     # -----------------------------
     # Climbing fibers provide teaching signals from the inferior olive
-    # In real cerebellum: exactly one CF per PKJ (one-to-one mapping)
-    # Here we have fewer CFs than PKJs, so each CF teaches multiple PKJs
-    cf_pre = np.arange(N_CF, dtype=np.int32)  # CF indices: 0, 1, 2, ...
-    cf_post = np.linspace(0, N_PKJ - 1, N_CF, dtype=np.int32)  # distribute CFs across PKJs
+    # CRITICAL: Must match CbmSim exactly! CbmSim uses num_p_io_from_io_to_pc = 8
+    # Each CF connects to 8 PKJ cells in blocks: CF 0 → PKJ 0-7, CF 1 → PKJ 8-15, etc.
+    # This block pattern prevents PKJ drift by ensuring all PKJ cells get CF teaching signals
+    
+    # Calculate how many PKJ cells each CF should connect to
+    pkj_per_cf = N_PKJ // N_CF  # Should be 8 for N_PKJ=128, N_CF=16
+    
+    cf_pre = []   # CF indices
+    cf_post = []  # PKJ indices
+    
+    for cf_idx in range(N_CF):
+        for j in range(pkj_per_cf):
+            pkj_idx = cf_idx * pkj_per_cf + j
+            if pkj_idx < N_PKJ:  # Make sure we don't exceed PKJ count
+                cf_pre.append(cf_idx)
+                cf_post.append(pkj_idx)
+    
     graph["CF_to_PKJ"] = {
-        "pre_idx": cp.asarray(cf_pre),    # Which CF provides the teaching signal
-        "post_idx": cp.asarray(cf_post),  # Which PKJ receives the teaching signal
+        "pre_idx": cp.asarray(cf_pre, dtype=cp.int32),    # Which CF provides the teaching signal
+        "post_idx": cp.asarray(cf_post, dtype=cp.int32),  # Which PKJ receives the teaching signal
     }
 
     # -----------------------------
