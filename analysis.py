@@ -424,7 +424,7 @@ def plot_pkj_mean_rate(spikes, dt, log_stride, fname, outdir, window_size=100):
 # --------------------------------------------
 # PF→PKJ weights plotting
 # --------------------------------------------
-def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
+def plot_weights(weights, dt, every_steps, outdir, cfg, max_plot=50):
     """
     Plot synaptic weights over time:
     - individual traces for a subset of synapses
@@ -473,7 +473,7 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
         ax.set_ylim(weight_mean - 0.01, weight_mean + 0.01)
     
     # Add horizontal lines for reference
-    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Initial weight (1.0)')
+    ax.axhline(y=cfg["weight_init"], color='red', linestyle='--', linewidth=2, alpha=0.8, label=f'Initial weight ({cfg["weight_init"]})')
     ax.axhline(y=weight_mean, color='orange', linestyle=':', linewidth=2, alpha=0.8, label=f'Mean weight ({weight_mean:.4f})')
     
     ax.set_title(f"PF→PKJ weights (individual traces, n={n_plot})", fontsize=14, fontweight='bold')
@@ -520,7 +520,7 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
                     alpha=0.4, color="blue", label="±1 std")
     
     # Add additional reference lines
-    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Initial weight (1.0)')
+    ax.axhline(y=cfg["weight_init"], color='red', linestyle='--', linewidth=2, alpha=0.8, label=f'Initial weight ({cfg["weight_init"]})')
     
     # Show min/max bounds
     min_val, max_val = mean.min(), mean.max()
@@ -560,7 +560,7 @@ def plot_weights(weights, dt, every_steps, outdir, max_plot=50):
         ax1.hist(weights[idx, :], bins=50, alpha=0.7, color=color, label=label, density=True, 
                 linewidth=1, edgecolor='black')
     
-    ax1.axvline(x=1.0, color='black', linestyle='--', linewidth=3, alpha=0.8, label='Initial weight (1.0)')
+    ax1.axvline(x=cfg["weight_init"], color='black', linestyle='--', linewidth=3, alpha=0.8, label=f'Initial weight ({cfg["weight_init"]})')
     ax1.axvline(x=weight_mean, color='red', linestyle=':', linewidth=2, alpha=0.8, label=f'Overall mean ({weight_mean:.4f})')
     ax1.set_xlabel("Weight", fontsize=12)
     ax1.set_ylabel("Density", fontsize=12)
@@ -724,7 +724,7 @@ def analyze(npz_path, outdir="analysis_outputs"):
     if "weights" in np_data:
         print("Processing weights...")
         weights = np_data["weights"]  # Weight snapshots over time
-        plot_weights(weights, dt, every_steps, outdir)
+        plot_weights(weights, dt, every_steps, outdir, cfg)
 
     # IO voltage trace - Shows gap junction coupling effects
     print("Processing IO voltage trace...")
