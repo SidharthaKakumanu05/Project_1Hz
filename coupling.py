@@ -32,5 +32,6 @@ def compute_io_coupling_currents(V, coupling_strength, num_neighbors=3):
         for j in neighbors:
             dV = V[j] - V[i]
             I[i] += coupling_strength * dV
+            I[j] -= coupling_strength * dV
     
     return I

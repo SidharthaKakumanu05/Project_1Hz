@@ -25,14 +25,17 @@ def update_pfpkj_plasticity(
 
     if cf_mask.any():
         posts_cf = cf_mask[post_idx]
+        # LTD condition: PF spiked within ltd_win BEFORE CF spike
+        # dt_pf > 0 means PF spiked before current time (which is when CF spikes)
         ltd_mask = posts_cf & (dt_pf > 0) & (dt_pf <= ltd_win)
         if ltd_mask.any():
-            w[ltd_mask] -= ltd_scale
+            w[ltd_mask] += ltd_scale  # ltd_scale is already negative (-0.00275)
 
     if pkj_spikes.any():
         posts_spike_no_cf = pkj_spikes[post_idx] & ~cf_mask[post_idx]
         
         if posts_spike_no_cf.any():
+            # LTP condition: PF spiked within ltp_win BEFORE PKJ spike (without CF)
             ltp_mask = posts_spike_no_cf & (dt_pf > 0) & (dt_pf <= ltp_win)
             if ltp_mask.any():
                 w[ltp_mask] += ltp_scale

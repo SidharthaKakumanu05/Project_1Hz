@@ -159,12 +159,12 @@ def run():
         # Further reduced scaling to make IO more quiescent
         gNCSum = 0.8 * I_dcnio / 3.1
         vCoupleIO = I_gap
-        gNoise = cp.random.uniform(-cfg["io_noise_std"], cfg["io_noise_std"], size=1)
         errDrive = cp.zeros(1, dtype=cp.float32)
         
-        IO = io_step(IO, gNCSum, vCoupleIO, gNoise, errDrive, dt, cfg["io_params"])
+        IO = io_step(IO, gNCSum, vCoupleIO, errDrive, dt, cfg["io_params"])
         
-        cf_spike = IO.spike
+        # Create CF spike array: if IO spikes, all CFs spike (since IO drives all CFs)
+        cf_spike = cp.full(N_CF, IO.spike, dtype=cp.bool_)
         if cp.any(cf_spike):
             cfpkj.enqueue_from_pre_spikes(cf_spike)
 
@@ -205,8 +205,12 @@ def run():
 
         cf_to_pkj_mask.fill(False)
         if cp.any(cf_spike):
-            cf_spike_expanded = cf_spike[cfpkj.pre_idx]
-            pkj_targets = cfpkj.post_idx[cf_spike_expanded]
+            # Map CF spikes to their PKJ targets
+            # cf_spike[i] = True means CF neuron i spiked
+            # cfpkj.pre_idx[j] = i means synapse j comes from CF neuron i
+            # cfpkj.post_idx[j] = k means synapse j targets PKJ neuron k
+            cf_spike_expanded = cf_spike[cfpkj.pre_idx]  # Which synapses are active
+            pkj_targets = cfpkj.post_idx[cf_spike_expanded]  # Which PKJ neurons are targeted
             cf_to_pkj_mask[pkj_targets] = True
 
         if step % cfg["plasticity_every_steps"] == 0:

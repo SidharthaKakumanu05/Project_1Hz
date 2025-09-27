@@ -35,7 +35,7 @@ def lif_step(state, I_syn, I_ext, dt, params):
     state.spike = spike
     return state
 
-def io_step(state, gNCSum, vCoupleIO, gNoise, errDrive, dt, params):
+def io_step(state, gNCSum, vCoupleIO, errDrive, dt, params):
     V = state.V
     gL = params["gL"]
     EL = params["EL"]
@@ -51,8 +51,8 @@ def io_step(state, gNCSum, vCoupleIO, gNoise, errDrive, dt, params):
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
 
-    # Fixed voltage update to match CbmSim: gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO + gNoise (removed errDrive)
-    V += gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO + gNoise
+    # Fixed voltage update to match CbmSim: gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO (removed errDrive and noise)
+    V += gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO
 
     spike = V >= state.thresh
     V = cp.where(spike, Vreset, V)
