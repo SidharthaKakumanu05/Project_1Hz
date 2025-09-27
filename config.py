@@ -13,7 +13,7 @@ def get_config():
     cfg["N_PF_POOL"] = 4096  # Keep same as current
     
     cfg["dt"] = 1e-3       # msPerTimeStep = 1.0 ms in CbmSim
-    cfg["T_sec"] = 600
+    cfg["T_sec"] = 10  # Reduced for faster testing
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])
     cfg["seed"] = 12345
     
@@ -91,13 +91,13 @@ def get_config():
     cfg["io_coupling_strength"] = 0.025 # coupleRiRjRatioIO from CbmSim
     
     # Plasticity parameters matching CbmSim exactly
-    cfg["ltd_window"] = 0.5
-    cfg["ltp_window"] = 0.5
+    cfg["ltd_window"] = 0.1
+    cfg["ltp_window"] = 0.9
     # CbmSim: synLTDStepSizeGRtoPC = -0.00275, synLTPStepSizeGRtoPC = 0.00030556
     cfg["ltd_scale"] = -0.00275  # synLTDStepSizeGRtoPC
     cfg["ltp_scale"] = 0.00030556  # synLTPStepSizeGRtoPC
     
     cfg["rec_weight_every_steps"] = int(0.1 / cfg["dt"])
-    cfg["plasticity_every_steps"] = int(0.01 / cfg["dt"])
+    cfg["plasticity_every_steps"] = int(0.01 / cfg["dt"])  # Original frequency for biological accuracy
 
     return cfg

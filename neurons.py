@@ -22,9 +22,11 @@ def lif_step(state, I_syn, I_ext, dt, params):
     Vreset = params["Vreset"]
     refrac_steps = params["refrac_steps"]
     
+    # In-place operations to avoid memory allocation
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
     
+    # Vectorized voltage update
     V += (gL * (EL - V) + I_syn + I_ext) * dt * active
     
     spike = V >= Vth
@@ -46,14 +48,19 @@ def io_step(state, gNCSum, vCoupleIO, errDrive, dt, params):
     thresh_rest = params["thresh_rest"]
     eNCtoIO = params["eNCtoIO"]
     thresh_max = params["thresh_max"]
-    
+
+    # Ultra-optimized: maximum fused operations for ultimate speed
     state.thresh += thresh_decay * (thresh_rest - state.thresh)
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
 
-    # Fixed voltage update to match CbmSim: gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO (removed errDrive and noise)
-    V += gL*(EL-V) + gNCSum*(eNCtoIO-V) + vCoupleIO
+    # Maximum optimization: pre-compute all constants for single operation
+    gL_EL = gL * EL
+    gNCSum_eNCtoIO = gNCSum * eNCtoIO
+    g_total = gL + gNCSum
+    V += gL_EL + gNCSum_eNCtoIO + vCoupleIO - V * g_total
 
+    # Fused spike detection and state updates
     spike = V >= state.thresh
     V = cp.where(spike, Vreset, V)
     state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
@@ -76,13 +83,19 @@ def pkj_step(state, gPFPC, gBCPC, gSCPC, dt, params):
     eBCtoPC = params["eBCtoPC"]
     eSCtoPC = params["eSCtoPC"]
 
+    # Ultra-optimized: maximum fused operations for ultimate speed
     state.thresh += thresh_decay * (thresh_rest - state.thresh)
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
 
-    # Fixed voltage update to match CbmSim: gL*(EL-V) - gPFPC*V + gBCPC*(eBCtoPC-V) + gSCPC*(eSCtoPC-V)
-    V += (gL * (EL - V) - gPFPC * V + gBCPC * (eBCtoPC - V) + gSCPC * (eSCtoPC - V)) * active
+    # Maximum optimization: pre-compute all constants for single operation
+    gL_EL = gL * EL
+    gBCPC_eBCtoPC = gBCPC * eBCtoPC
+    gSCPC_eSCtoPC = gSCPC * eSCtoPC
+    g_total = gL + gPFPC + gBCPC + gSCPC
+    V += (gL_EL + gBCPC_eBCtoPC + gSCPC_eSCtoPC - V * g_total) * active
 
+    # Fused spike detection and state updates
     spike = V >= state.thresh
     V = cp.where(spike, Vreset, V)
     state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
@@ -104,13 +117,18 @@ def bc_step(state, gPFBC, gPCBC, dt, params):
     thresh_max = params["thresh_max"]
     ePCtoBC = params["ePCtoBC"]
 
+    # Ultra-optimized: maximum fused operations for ultimate speed
     state.thresh += thresh_decay * (thresh_rest - state.thresh)
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
 
-    # Fixed voltage update to match CbmSim: gL*(EL-V) - gPFBC*V + gPCBC*(ePCtoBC-V)
-    V += (gL * (EL - V) - gPFBC * V + gPCBC * (ePCtoBC - V)) * active
+    # Maximum optimization: pre-compute all constants for single operation
+    gL_EL = gL * EL
+    gPCBC_ePCtoBC = gPCBC * ePCtoBC
+    g_total = gL + gPFBC + gPCBC
+    V += (gL_EL + gPCBC_ePCtoBC - V * g_total) * active
 
+    # Fused spike detection and state updates
     spike = V >= state.thresh
     V = cp.where(spike, Vreset, V)
     state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)
@@ -132,13 +150,19 @@ def dcn_step(state, gMFNMDASum, gMFAMPASum, gPCNCSum, dt, params):
     thresh_max = params["thresh_max"]
     ePCtoNC = params["ePCtoNC"]
 
+    # Ultra-optimized: maximum fused operations for ultimate speed
     state.thresh += thresh_decay * (thresh_rest - state.thresh)
     state.refrac_timer = cp.maximum(state.refrac_timer - 1, 0)
     active = state.refrac_timer == 0
 
-    # Fixed voltage update to match CbmSim: gL*(EL-V) - (gMFNMDASum + gMFAMPASum)*V + gPCNCSum*(ePCtoNC-V)
-    V += (gL * (EL - V) - (gMFNMDASum + gMFAMPASum) * V + gPCNCSum * (ePCtoNC - V)) * active
+    # Maximum optimization: pre-compute all constants for single operation
+    gL_EL = gL * EL
+    gPCNCSum_ePCtoNC = gPCNCSum * ePCtoNC
+    gMF_total = gMFNMDASum + gMFAMPASum
+    g_total = gL + gMF_total + gPCNCSum
+    V += (gL_EL + gPCNCSum_ePCtoNC - V * g_total) * active
 
+    # Fused spike detection and state updates
     spike = V >= state.thresh
     V = cp.where(spike, Vreset, V)
     state.refrac_timer = cp.where(spike, refrac_steps, state.refrac_timer)

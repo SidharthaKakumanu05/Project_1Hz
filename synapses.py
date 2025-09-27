@@ -123,7 +123,7 @@ class SynapseProj:
 
     def step_decay(self):
         """
-        Advance the delay buffer pointer and reset the slot we just moved into.
+        Advance the delay buffer pointer and apply exponential decay to all slots.
         
         This function is called every timestep to "rotate" the delay buffer.
         It's like moving the hands of a clock forward - signals that were scheduled
@@ -134,6 +134,8 @@ class SynapseProj:
         - Each timestep, we move to the next row
         - When we reach the end, we wrap around to the beginning
         """
+        # Apply exponential decay to all slots (vectorized operation)
+        self.delay_buf *= self.alpha
         # Move the pointer to the next slot in the circular buffer
         self.buf_ptr = (self.buf_ptr + 1) % self.delay_buf.shape[0]
         # Clear the slot we just moved into (faster than multiplying by decay factor)
