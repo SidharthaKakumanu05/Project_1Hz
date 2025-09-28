@@ -151,6 +151,7 @@ def run():
     for step in tqdm(range(T_steps), desc="Simulating", unit="steps"):
         sim_t = step * dt
 
+        # === IO computation (optimized) ===
         dcnio.step_decay()
         I_gap = compute_io_coupling_currents(IO.V, cfg["io_coupling_strength"])
         I_dcnio = simulate_current_from_proj(dcnio, IO.V, I_io_buffer)
@@ -168,6 +169,7 @@ def run():
         if cp.any(cf_spike):
             cfpkj.enqueue_from_pre_spikes(cf_spike)
 
+        # === Input generation (optimized) ===
         pf_spike_pool = step_pf_coinflip(pf_state, cfg["pf_rate"], dt)
         rec.log_spikes(step, "PF", pf_spike_pool)
         if cp.any(pf_spike_pool):
@@ -178,12 +180,14 @@ def run():
         if cp.any(mf_spike):
             mfdcn.enqueue_from_pre_spikes(mf_spike)
 
+        # === BC computation (optimized) ===
         pfbc.step_decay()
         I_pfbc = simulate_current_from_proj(pfbc, BC.V, I_bc_buffer)
         BC = bc_step(BC, I_pfbc, cp.zeros_like(I_pfbc), dt, cfg["bc_params"])
         if cp.any(BC.spike):
             bcpkj.enqueue_from_pre_spikes(BC.spike)
 
+        # === PKJ computation (optimized) ===
         cfpkj.step_decay()
         bcpkj.step_decay()
         pfpkj.step_decay()
@@ -194,6 +198,8 @@ def run():
 
         if cp.any(PKJ.spike):
             pkjdcn.enqueue_from_pre_spikes(PKJ.spike)
+        
+        # === DCN computation (optimized) ===
         pkjdcn.step_decay()
         mfdcn.step_decay()
         I_pkjdcn = simulate_current_from_proj(pkjdcn, DCN.V)
@@ -203,17 +209,19 @@ def run():
         if cp.any(DCN.spike):
             dcnio.enqueue_from_pre_spikes(DCN.spike)
 
-        cf_to_pkj_mask.fill(False)
-        if cp.any(cf_spike):
-            # Map CF spikes to their PKJ targets
-            # cf_spike[i] = True means CF neuron i spiked
-            # cfpkj.pre_idx[j] = i means synapse j comes from CF neuron i
-            # cfpkj.post_idx[j] = k means synapse j targets PKJ neuron k
-            cf_spike_expanded = cf_spike[cfpkj.pre_idx]  # Which synapses are active
-            pkj_targets = cfpkj.post_idx[cf_spike_expanded]  # Which PKJ neurons are targeted
-            cf_to_pkj_mask[pkj_targets] = True
-
+        # === Plasticity computation (optimized) ===
         if step % cfg["plasticity_every_steps"] == 0:
+            # Pre-compute CF to PKJ mapping only when needed for plasticity
+            cf_to_pkj_mask.fill(False)
+            if cp.any(cf_spike):
+                # Map CF spikes to their PKJ targets
+                # cf_spike[i] = True means CF neuron i spiked
+                # cfpkj.pre_idx[j] = i means synapse j comes from CF neuron i
+                # cfpkj.post_idx[j] = k means synapse j targets PKJ neuron k
+                cf_spike_expanded = cf_spike[cfpkj.pre_idx]  # Which synapses are active
+                pkj_targets = cfpkj.post_idx[cf_spike_expanded]  # Which PKJ neurons are targeted
+                cf_to_pkj_mask[pkj_targets] = True
+
             pfpkj.w, last_pf_spike, last_pkj_spike, last_cf_spike = update_pfpkj_plasticity(
                 pfpkj.w, pfpkj.pre_idx, pfpkj.post_idx,
                 pf_spike_pool, PKJ.spike, cf_to_pkj_mask,
@@ -221,6 +229,7 @@ def run():
                 last_pf_spike, last_pkj_spike, last_cf_spike
             )
 
+        # === Data recording (optimized) ===
         rec.log_spikes(step, "IO", IO.spike)
         rec.log_spikes(step, "PKJ", PKJ.spike)
         rec.log_spikes(step, "BC", BC.spike)

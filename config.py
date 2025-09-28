@@ -13,7 +13,7 @@ def get_config():
     cfg["N_PF_POOL"] = 4096  # Keep same as current
     
     cfg["dt"] = 1e-3       # msPerTimeStep = 1.0 ms in CbmSim
-    cfg["T_sec"] = 600
+    cfg["T_sec"] = 60
     cfg["T_steps"] = int(cfg["T_sec"] / cfg["dt"])
     cfg["seed"] = 12345
     

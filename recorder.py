@@ -12,6 +12,7 @@ everything that happens during the simulation so we can analyze it later!
 
 import numpy as np
 import time
+import cupy as cp
 
 class Recorder:
     """
@@ -104,13 +105,14 @@ class Recorder:
         # Guard: in case steps don't divide evenly into bins, ignore out-of-range
         if bin_idx >= self.spikes[pop_name].shape[0]:
             return
-        # Add to bin: note this adds elementwise across neurons
-        # Convert to numpy only when necessary (GPU → CPU)
-        if hasattr(spikes, "get"):
-            spikes_np = spikes.get().astype(np.uint8)
-        else:
-            spikes_np = np.asarray(spikes, dtype=np.uint8)
-        self.spikes[pop_name][bin_idx] += spikes_np
+        
+        # Optimized: Only convert to numpy when spikes actually occurred
+        if cp.any(spikes):  # Check on GPU first to avoid unnecessary CPU transfer
+            if hasattr(spikes, "get"):
+                spikes_np = spikes.get().astype(np.uint8)
+            else:
+                spikes_np = np.asarray(spikes, dtype=np.uint8)
+            self.spikes[pop_name][bin_idx] += spikes_np
 
     # -------------------------
     # Weight logging
@@ -131,10 +133,11 @@ class Recorder:
             Current synaptic weights (usually PF→PKJ weights)
         """
         if step % self.rec_weight_every == 0:
+            # Optimized: Only convert to numpy when actually logging
             if hasattr(weights, "get"):    # handle CuPy → NumPy
-                self.weights.append(weights.get())
+                self.weights.append(weights.get().copy())  # Use copy to avoid memory issues
             else:
-                self.weights.append(np.asarray(weights))
+                self.weights.append(np.asarray(weights).copy())
 
     # -------------------------
     # Timing summary
