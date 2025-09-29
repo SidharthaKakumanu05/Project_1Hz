@@ -20,7 +20,7 @@ def get_config():
     # IO parameters matching CbmSim exactly
     # CbmSim: rawGLeakIO=0.15, eLeakIO=-60.0, threshRestIO=-57.4, threshMaxIO=10.0
     cfg["io_params"] = dict(
-        gL=0.03, EL=-60.0, Vth=-57.4, Vreset=-70.0,  # Scaled gL like CbmSim
+        gL=0.0385, EL=-60.0, Vth=-57.4, Vreset=-70.0,  # Scaled gL like CbmSim
         refrac_steps=int(0.002 / cfg["dt"]),
         thresh_decay=1-exp(-cfg["dt"]/200.0), thresh_rest=-57.4,  # threshDecTauIO=200.0
         thresh_max=10.0, eNCtoIO=-80.0
@@ -91,8 +91,8 @@ def get_config():
     cfg["io_coupling_strength"] = 0.025 # coupleRiRjRatioIO from CbmSim
     
     # Plasticity parameters matching CbmSim exactly
-    cfg["ltd_window"] = 0.5
-    cfg["ltp_window"] = 0.5
+    cfg["ltd_window"] = 0.1
+    cfg["ltp_window"] = 0.9
     # CbmSim: synLTDStepSizeGRtoPC = -0.00275, synLTPStepSizeGRtoPC = 0.00030556
     cfg["ltd_scale"] = -0.00275  # synLTDStepSizeGRtoPC
     cfg["ltp_scale"] = 0.00030556  # synLTPStepSizeGRtoPC
